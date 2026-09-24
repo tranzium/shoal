@@ -74,6 +74,13 @@ interface RunState {
   strategies?: { id: string; name: string }[];
 }
 
+/** The task queue's state — who's running (if submitted via POST /api/tasks) and how many wait behind them. */
+interface TaskQueueState {
+  runningId: string | null;
+  runningTitle: string | null;
+  queueLength: number;
+}
+
 export function App() {
   const [agents, setAgents] = useState<Map<string, AgentState>>(new Map());
   const [thoughts, setThoughts] = useState<Thought[]>([]);
@@ -84,6 +91,7 @@ export function App() {
   const [cost, setCost] = useState<{ costUsd: number | null; tokens: number } | null>(null);
   const [connected, setConnected] = useState(false);
   const [run, setRun] = useState<RunState | null>(null);
+  const [taskQueue, setTaskQueue] = useState<TaskQueueState | null>(null);
   // Draft config the operator edits before hitting restart.
   const [draftSwarm, setDraftSwarm] = useState<number | null>(null);
   const [draftStrategy, setDraftStrategy] = useState<string | null>(null);
@@ -125,6 +133,7 @@ export function App() {
             },
           ]);
         else if (ev.type === "run_state") setRun(ev);
+        else if (ev.type === "task_queue") setTaskQueue(ev);
         else if (ev.type === "run_reset") {
           setAgents(new Map());
           setThoughts([]);
@@ -204,7 +213,13 @@ export function App() {
           <span className="tagline">a swarm of AI users attacking your site</span>
         </div>
         <div className="stats">
-          {config && <span className="task" title={config.task}>“{config.task}”</span>}
+          {taskQueue?.runningTitle && (
+            <span className="task" title={taskQueue.runningTitle}>
+              📋 “{taskQueue.runningTitle}”
+            </span>
+          )}
+          {!taskQueue?.runningTitle && config && <span className="task" title={config.task}>“{config.task}”</span>}
+          {!!taskQueue?.queueLength && <span className="pill queued">{taskQueue.queueLength} queued</span>}
           <span className="pill running">{running} swimming</span>
           {queued > 0 && <span className="pill queued">{queued} waiting</span>}
           <span className="pill ok">{done} done</span>

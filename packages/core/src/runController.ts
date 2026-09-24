@@ -48,6 +48,11 @@ export class RunController {
 
   constructor(private opts: RunOptions) {}
 
+  /** The dashboard/task-API server this controller owns — `shoal serve` wires a TaskQueue to it. */
+  get shoalServer(): ShoalServer {
+    return this.server;
+  }
+
   /** `runImmediately: false` (used by `shoal serve`) starts the server and stays in `idle`. */
   async start(runImmediately = true): Promise<void> {
     await this.server.start(this.opts.port);

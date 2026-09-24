@@ -50,7 +50,12 @@ export interface AgentContext {
   stagger?: boolean;
 }
 
-function systemPrompt(persona: Persona, task: string, ctx: AgentContext): string {
+function systemPrompt(
+  persona: Persona,
+  task: string,
+  ctx: AgentContext,
+  login?: { email: string; password: string },
+): string {
   const strategy = ctx.strategy;
   const role = ctx.sceneRole;
   const effectiveTask = role?.task || strategy?.goal?.trim() || task;
@@ -64,6 +69,10 @@ ${persona.profile}
 # Your task
 ${effectiveTask}
 ${
+  login
+    ? `\n# Login credentials\nIf the task requires signing in, use these — never repeat them in a thought, finding, or anywhere else you narrate:\nEmail: ${login.email}\nPassword: ${login.password}\n`
+    : ""
+}${
   strategy && strategy.id !== "complete-task"
     ? `\n# Your approach: ${strategy.name}\n${strategy.directive}`
     : ""
@@ -172,7 +181,7 @@ export async function runLlmAgent(
     state.status = "browsing";
     push();
 
-    driver.init(systemPrompt(persona, opts.task, ctx), first);
+    driver.init(systemPrompt(persona, opts.task, ctx, opts.login), first);
 
     const maxSteps = Math.min(opts.maxSteps, persona.patience_steps + 6);
     let finished = false;

@@ -9,3 +9,4 @@ node_modules/
 login.local.cmd
 shoal-report.md
 shoal-report.json
+reports/
