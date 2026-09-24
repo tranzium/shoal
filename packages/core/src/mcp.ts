@@ -197,13 +197,14 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
         );
       }
       const swarm = Math.max(1, Math.min(Number(args.swarm ?? 5), 50));
+      const provider = (process.env.SHOAL_PROVIDER as RunOptions["provider"]) ?? "anthropic";
       const opts: RunOptions = {
         url,
         task: String(args.task ?? "Explore the site and report anything confusing."),
         swarm,
         concurrency: Math.min(swarm, 5),
-        provider: (process.env.SHOAL_PROVIDER as RunOptions["provider"]) ?? "anthropic",
-        model: process.env.SHOAL_MODEL ?? "claude-opus-5",
+        provider,
+        model: process.env.SHOAL_MODEL ?? (provider === "codex" ? "codex" : "claude-opus-5"),
         baseUrl: process.env.SHOAL_BASE_URL,
         effort: "medium",
         // Default true, but an MCP client is usually the better verifier — see tool description.

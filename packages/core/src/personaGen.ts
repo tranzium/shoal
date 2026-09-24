@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { stringify } from "yaml";
 import { AgentBrowser, closeSharedBrowser } from "./browser.js";
 import { readSubscriptionCreds } from "./subscriptionAuth.js";
+import { codexJson } from "./codexCli.js";
 import type { AudienceBrief, Persona } from "./types.js";
 
 /**
@@ -12,7 +13,7 @@ import type { AudienceBrief, Persona } from "./types.js";
  * step turns a brief into a weighted panel of distinct simulated users.
  */
 
-type Provider = "anthropic" | "openai" | "subscription";
+type Provider = "anthropic" | "openai" | "subscription" | "codex";
 
 /** A capable text/vision Claude client for the synthesis + inference calls. */
 function smartClient(provider: Provider): { client: Anthropic; model: string } {
@@ -68,6 +69,29 @@ export function briefFromText(product: string): AudienceBrief {
 
 /** Read the target page and let vision describe the product + its likely audience. */
 export async function briefFromUrl(url: string, provider: Provider): Promise<AudienceBrief> {
+  if (provider === "codex") {
+    const browser = new AgentBrowser();
+    try {
+      await browser.launch(url, true, true);
+      await browser.page.waitForTimeout(600);
+      const pageText = (await browser.page.locator("body").innerText().catch(() => "")).slice(0, 15000);
+      const result = await codexJson({
+        schema: {
+          type: "object",
+          properties: { product: { type: "string" } },
+          required: ["product"],
+          additionalProperties: false,
+        },
+        prompt:
+          `Describe this website in 3–5 sentences: what it offers, the main task visitors come to do, and likely visitor types. ` +
+          `Use only the page text below; be concrete.\n\nURL: ${url}\n\nPage text:\n${pageText}`,
+      });
+      return { source: "url", product: String((result.value as { product?: string }).product ?? url), signals: [] };
+    } finally {
+      await browser.close();
+      await closeSharedBrowser();
+    }
+  }
   const { client, model } = smartClient(provider);
   const browser = new AgentBrowser();
   try {
@@ -192,6 +216,37 @@ export async function synthesizePersonas(
   n: number,
   provider: Provider,
 ): Promise<Persona[]> {
+  if (provider === "codex") {
+    const result = await codexJson({
+      schema: {
+        type: "object",
+        properties: {
+          personas: {
+            type: "array",
+            minItems: n,
+            maxItems: n,
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                emoji: { type: "string" },
+                patience_steps: { type: "integer" },
+                weight: { type: "integer" },
+                profile: { type: "string" },
+              },
+              required: ["name", "emoji", "patience_steps", "weight", "profile"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["personas"],
+        additionalProperties: false,
+      },
+      prompt: `${SYNTH_SYSTEM}\n\n${synthPrompt(brief, n)}`,
+    });
+    const raw = (result.value as { personas: Array<Record<string, unknown>> }).personas;
+    return normalizePersonas(raw, n, brief.source);
+  }
   if (!hasAnthropicCreds(provider)) {
     throw new Error(
       "Persona generation needs Anthropic credentials (API key or a Claude Code subscription). " +

@@ -178,7 +178,7 @@ is what enables a near-zero-cost path.
 
 | Workload | What it is | Cheapest legitimate source |
 |---|---|---|
-| **Swarm inference** | Each agent's per-step vision loop (screenshot → act) | **Local model via Ollama = $0**, or cheap API tier (Qwen/GLM/OpenRouter), or Anthropic API |
+| **Swarm inference** | Each agent's per-step vision loop (screenshot → act) | **Local model via Ollama = $0**, Codex CLI on a ChatGPT plan, cheap API tier (Qwen/GLM/OpenRouter), or Anthropic API |
 | **Orchestration + verification** | Deciding to test, reading findings, reasoning about them | **Your Claude Code / Codex subscription**, via the MCP server |
 
 **Can you point your Pro/Max subscription at the swarm drivers?** Empirically, **yes — and
@@ -206,6 +206,12 @@ The constraints are real and are baked into the mode's tuning, not waved away:
   personal/local use; **don't build production or unattended automation on it.** The mode
   prints a warning saying exactly this.
 
+**Codex CLI subscription driver.** `--provider codex` runs each simulated user in a
+resumable `codex exec` session, authenticated by Codex CLI's ChatGPT sign-in. Shoal does not
+extract a Codex token or pass an OpenAI API key. The run uses ChatGPT plan quota, so keep
+swarms modest. `--read-only` blocks typing, form controls, transaction links, external page
+navigation, and mutating HTTP methods while allowing safe same-site browsing.
+
 For big or unattended swarms the robust paths remain: local/cheap models
 (`--provider openai`) or a metered API key (`--provider anthropic`).
 
@@ -223,11 +229,10 @@ cleaner path for the smart, low-volume half of the work:
    legitimately moves the one expensive smart-model call onto the flat-fee subscription,
    because it's just the agent reasoning about tool output.
 
-Net: a solo dev with a Max subscription and a decent GPU can run audience-accurate swarms
-at **~$0 marginal cost** — subscription drives the loop and the verification, Ollama drives
-the fish. That's a genuinely differentiating open-source story, and it's honest: the
-boundary (can't extract the sub token for the drivers; *can* orchestrate + verify on it via
-MCP) is a real architectural line, not a loophole.
+Net: a solo dev with a subscription and a decent GPU can run audience-accurate swarms at
+**low marginal cost** — Codex or Claude subscription access can drive small swarms, while
+Ollama can drive larger local swarms. Subscription access uses plan quota. The Codex path
+keeps authentication inside the official Codex CLI; Shoal does not extract its token.
 
 ---
 
@@ -236,7 +241,7 @@ MCP) is a real architectural line, not a loophole.
 | Free / OSS (adoption + portfolio) | Commercial (the moat) |
 |---|---|
 | The swarm engine, personas-as-YAML, strategies | Hosted persona **synthesis** from analytics |
-| Computer-use drivers (Anthropic + OpenAI-compatible + local) | PostHog / Sentry / Clarity **connectors** |
+| Computer-use drivers (Anthropic, OpenAI-compatible, Claude subscription, Codex CLI) | PostHog / Sentry / Clarity **connectors** |
 | The dashboard (camera wall + school view) | Closed-loop dashboard (before/after funnel deltas) |
 | The verify pass, the cost meter | Persona models trained on *your* private data |
 | **The MCP server** | CI/PR gate as a managed service |
@@ -251,7 +256,7 @@ data being modeled, which only runs as a service.
 
 **Built:**
 
-1. ✅ Engine, three drivers (Anthropic / OpenAI-compatible / subscription), dashboard,
+1. ✅ Engine, four drivers (Anthropic / OpenAI-compatible / Claude subscription / Codex CLI), dashboard,
    verify pass, cost meter.
 2. ✅ Scale — wave scheduling, shared-browser contexts, school-of-fish view.
 3. ✅ **Persona generation** (§3) from product outlook or log data, with weighted panels.

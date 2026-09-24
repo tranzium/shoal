@@ -21,9 +21,14 @@ export interface ModelTurn {
   usage?: import("./types.js").TokenUsage;
 }
 
+export interface TurnProgress {
+  step: number;
+  maxSteps: number;
+}
+
 /**
- * What the agent perceives after an action. Vision agents get an image; accessibility
- * agents get text (the a11y tree / focused-element description). Never both.
+ * What the agent perceives after an action. Vision agents may get both an image and a
+ * compact semantic summary; accessibility agents get text only.
  */
 export interface Observation {
   image?: string; // base64 jpeg
@@ -33,8 +38,9 @@ export interface Observation {
 export interface AgentDriver {
   init(system: string, first: Observation): void;
   /** Sends pending tool results (if any) and gets the model's next turn. */
-  next(): Promise<ModelTurn>;
+  next(progress?: TurnProgress): Promise<ModelTurn>;
   addToolResult(id: string, text: string, obs?: Observation): void;
+  close?(): Promise<void>;
 }
 
 /**
@@ -74,6 +80,25 @@ export const A11Y_TOOL_SCHEMA = {
   additionalProperties: false,
 };
 
+/** Semantic controls available to Codex alongside its screenshot-based computer tool. */
+export const BROWSER_TOOL_NAME = "browser";
+export const BROWSER_TOOL_DESCRIPTION =
+  "Act on a named, visible page element from the latest browser snapshot. Prefer this for links, buttons, and form fields; use the computer tool for canvas or visually precise interactions. Element refs expire after each action. Never guess a ref.";
+export const BROWSER_TOOL_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    action: {
+      type: "string",
+      enum: ["click", "fill", "press", "select", "check", "uncheck", "hover"],
+      description: "click activates the element; fill enters text; press sends a key; select chooses an option label; check/uncheck toggles a checkbox; hover reveals hover menus.",
+    },
+    ref: { type: "string", description: "Element reference from the latest browser page snapshot, such as e12" },
+    text: { type: "string", description: "Text for fill, key for press, or visible option label for select" },
+  },
+  required: ["action", "ref"],
+  additionalProperties: false,
+};
+
 /** Provider-neutral schemas for the two shoal tools; drivers adapt the wrapper format. */
 export const FINDING_SCHEMA = {
   type: "object" as const,
@@ -103,13 +128,21 @@ export const RESULT_SCHEMA = {
   properties: {
     outcome: { type: "string", enum: ["completed", "gave_up"] },
     reason: { type: "string", description: "One or two sentences on why, in character" },
+    purchaseIntent: {
+      type: "string",
+      enum: ["yes", "maybe", "no", "not_applicable"],
+      description: "Would you personally buy this offering at the price shown? Use not_applicable if the task is unrelated to a purchase.",
+    },
+    chosenOffer: { type: "string", description: "The package or offering you would choose, or an empty string if none" },
+    recommendation: { type: "string", description: "One concrete change that would make this offering more compelling" },
   },
-  required: ["outcome", "reason"],
+  required: ["outcome", "reason", "purchaseIntent", "chosenOffer", "recommendation"],
   additionalProperties: false,
 };
 
 export const RESULT_DESCRIPTION =
-  "Call exactly once, when you have either completed the task or decided to give up. Ends your session.";
+  "Call exactly once, when you have either completed the task or decided to give up. Ends your session. " +
+  "When asked to evaluate an offer, fill purchaseIntent, chosenOffer, and recommendation. For other tasks use purchaseIntent not_applicable and empty strings for the other two fields.";
 
 /** Multi-user coordination tools (only offered when the agent has a scene role). */
 export const SIGNAL_SCHEMA = {

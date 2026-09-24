@@ -1,5 +1,5 @@
 import { cpus } from "node:os";
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Locator, type Page } from "playwright";
 
 export const DISPLAY_WIDTH = 1024;
 export const DISPLAY_HEIGHT = 768;
@@ -124,20 +124,88 @@ export interface ComputerAction {
   duration?: number;
 }
 
+export interface SemanticBrowserAction {
+  action: "click" | "fill" | "press" | "select" | "check" | "uncheck" | "hover";
+  ref: string;
+  text?: string;
+}
+
+interface SemanticRef {
+  kind: "role" | "placeholder";
+  role?: SemanticRole;
+  name: string;
+  occurrence: number;
+  tag: string;
+  type: string;
+  href: string;
+  placeholder: string;
+  ariaLabel: string;
+  inForm: boolean;
+  submit: boolean;
+  targetBlank: boolean;
+  download: boolean;
+  disabled: boolean;
+}
+
+interface SemanticElement extends Omit<SemanticRef, "role"> {
+  role: string;
+  displayHref: string;
+}
+
+type SemanticRole = "link" | "button" | "textbox" | "searchbox" | "combobox" | "checkbox" | "radio" | "switch" | "tab" | "menuitem" | "option";
+
+const RISKY_ACTION_LABEL =
+  /\b(?:buy|purchase|place order|order now|checkout|cart|book|reserve|payment|pay|subscribe|sign\s*up|register|log\s*in|login|sign\s*in|accept|agree|submit|send)\b/i;
+const RISKY_CONNECTION_LABEL =
+  /\b(?:connect|link|add|authorize|enable|start|launch|run)\b.{0,40}\b(?:exchange|broker|account|wallet|api\s*keys?|trading\s*bots?)\b|\b(?:exchange|broker|account|wallet|api\s*keys?|trading\s*bots?)\b.{0,40}\b(?:connect|link|add|authorize|enable|start|launch|run|trade)\b/i;
+const RISKY_ACTION_PATH =
+  /(?:^|\/)(?:checkout|cart|purchase|orders?|place-order|booking|book|reserve|payment|pay|signup|sign-up|register|login|log-in|signin|sign-in|account|wallet|deposit|withdraw(?:al)?|exchange\/connect|connect\/exchange|broker\/connect|connect\/broker|api[-_]?keys?|connect|authorize|bot\/start|bots?\/(?:start|launch|run|create)|trade-now)(?:\/|[.?_-]|$)/i;
+
+function riskyLabel(label: string): boolean {
+  return RISKY_ACTION_LABEL.test(label) || RISKY_CONNECTION_LABEL.test(label);
+}
+
 export class AgentBrowser {
   private context!: BrowserContext;
   private cdp?: CDPSession;
+  private readOnly = false;
+  private initialHost = "";
+  private semanticRefs = new Map<string, SemanticRef>();
+  private semanticRefSequence = 0;
   page!: Page;
 
-  async launch(url: string, headless: boolean): Promise<void> {
+  async launch(url: string, headless: boolean, readOnly = false): Promise<void> {
+    this.readOnly = readOnly;
+    this.initialHost = new URL(url).hostname.toLowerCase();
     const browser = await sharedBrowser(headless);
     this.context = await browser.newContext({
       viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
       deviceScaleFactor: 1,
       ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1",
     });
+    if (readOnly) {
+      // Read-only runs may render ordinary pages, but no mutating HTTP method can leave
+      // the browser context even if page code tries to submit something unexpectedly.
+      await this.context.route("**/*", async (route) => {
+        const method = route.request().method().toUpperCase();
+        if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+          await route.abort("blockedbyclient");
+          return;
+        }
+        if (route.request().isNavigationRequest()) {
+          const targetHost = new URL(route.request().url()).hostname.toLowerCase().replace(/^www\./, "");
+          const siteHost = this.initialHost.replace(/^www\./, "");
+          if (targetHost !== siteHost) {
+            await route.abort("blockedbyclient");
+            return;
+          }
+        }
+        await route.continue();
+      });
+    }
     this.page = await this.context.newPage();
     await this.page.goto(url, { waitUntil: "domcontentloaded" });
+    this.initialHost = new URL(this.page.url()).hostname.toLowerCase();
   }
 
   private async lifecycle(state: "frozen" | "active"): Promise<void> {
@@ -170,11 +238,323 @@ export class AgentBrowser {
     return buf.toString("base64");
   }
 
+  /** A compact, fresh map of visible page controls for grounded Codex actions. */
+  async semanticSnapshot(): Promise<string> {
+    const snapshot = await this.page.evaluate(() => {
+      const selector = [
+        "a[href]", "button", "input:not([type=hidden])", "textarea", "select", "summary",
+        "[role=link]", "[role=button]", "[role=textbox]", "[role=searchbox]", "[role=combobox]",
+        "[role=checkbox]", "[role=radio]", "[role=switch]", "[role=tab]", "[role=menuitem]", "[role=option]",
+        "[contenteditable=true]", "[placeholder]",
+      ].join(",");
+      const supported = new Set([
+        "link", "button", "textbox", "searchbox", "combobox", "checkbox", "radio", "switch", "tab", "menuitem", "option",
+      ]);
+      const roleOf = (el: HTMLElement): string | undefined => {
+        const explicit = el.getAttribute("role")?.trim().split(/\s+/)[0];
+        if (explicit && supported.has(explicit)) return explicit;
+        const tag = el.tagName.toLowerCase();
+        if (tag === "a" && (el as HTMLAnchorElement).hasAttribute("href")) return "link";
+        if (tag === "button" || tag === "summary") return "button";
+        if (tag === "textarea" || el.isContentEditable) return "textbox";
+        if (tag === "select") return "combobox";
+        if (tag === "input") {
+          const type = (el as HTMLInputElement).type.toLowerCase();
+          if (["button", "submit", "reset", "image"].includes(type)) return "button";
+          if (type === "checkbox") return "checkbox";
+          if (type === "radio") return "radio";
+          if (type === "search") return "searchbox";
+          return "textbox";
+        }
+        return undefined;
+      };
+      const nameOf = (el: HTMLElement): string => {
+        const normalize = (value: string | null | undefined) => (value ?? "").replace(/\s+/g, " ").trim();
+        const aria = normalize(el.getAttribute("aria-label"));
+        if (aria) return aria;
+        const labelledBy = el.getAttribute("aria-labelledby");
+        if (labelledBy) {
+          const names = labelledBy.split(/\s+/).map((id) => normalize(document.getElementById(id)?.textContent)).filter(Boolean);
+          if (names.length) return names.join(" ");
+        }
+        const labels = "labels" in el ? Array.from((el as HTMLInputElement).labels ?? []).map((label) => normalize(label.textContent)).filter(Boolean) : [];
+        if (labels.length) return labels.join(" ");
+        const id = el.id;
+        if (id) {
+          const label = document.querySelector(`label[for="${CSS.escape(id)}"]`)?.textContent?.trim();
+          if (label) return label;
+        }
+        const wrappingLabel = el.closest("label")?.textContent?.trim();
+        if (wrappingLabel) return wrappingLabel;
+        if (el.tagName === "INPUT" && ["button", "submit", "reset"].includes((el as HTMLInputElement).type)) {
+          return (el as HTMLInputElement).value.trim();
+        }
+        const text = normalize(el.innerText || el.textContent);
+        if (text) return text;
+        const imageAlt = normalize(el.querySelector("img[alt]")?.getAttribute("alt"));
+        return imageAlt || normalize(el.getAttribute("title"));
+      };
+      const visible = (el: HTMLElement): boolean => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0";
+      };
+      const candidates = Array.from(document.querySelectorAll<HTMLElement>(selector));
+      const occurrences = new Map<string, number>();
+      const placeholderOccurrences = new Map<string, number>();
+      const elements = [] as Array<{
+        role: string;
+        name: string;
+        kind: "role" | "placeholder";
+        occurrence: number;
+        tag: string;
+        type: string;
+        href: string;
+        displayHref: string;
+        placeholder: string;
+        ariaLabel: string;
+        inForm: boolean;
+        submit: boolean;
+        targetBlank: boolean;
+        download: boolean;
+        disabled: boolean;
+      }>;
+      for (const el of candidates) {
+        const placeholder = el.getAttribute("placeholder")?.replace(/\s+/g, " ").trim() ?? "";
+        const placeholderOccurrence = placeholderOccurrences.get(placeholder) ?? 0;
+        if (placeholder) placeholderOccurrences.set(placeholder, placeholderOccurrence + 1);
+        const role = roleOf(el);
+        if (!role) continue;
+        const accessibleName = nameOf(el);
+        const kind = accessibleName ? "role" : placeholder ? "placeholder" : undefined;
+        const name = accessibleName || placeholder;
+        if (!kind || !name) continue;
+        const key = JSON.stringify([kind, role, name]);
+        const occurrence = kind === "placeholder" ? placeholderOccurrence : occurrences.get(key) ?? 0;
+        // Role locators only match visible elements; placeholder locators count every matching attribute.
+        if (kind === "role" && visible(el)) occurrences.set(key, occurrence + 1);
+        if (!visible(el)) continue;
+        const anchor = el.tagName === "A" ? (el as HTMLAnchorElement) : undefined;
+        let displayHref = "";
+        if (anchor?.href) {
+          try {
+            const url = new URL(anchor.href);
+            displayHref = `${url.origin}${url.pathname}`;
+          } catch {
+            displayHref = "";
+          }
+        }
+        const input = el.tagName === "INPUT" ? (el as HTMLInputElement) : undefined;
+        const button = el.tagName === "BUTTON" ? (el as HTMLButtonElement) : undefined;
+        elements.push({
+          role,
+          name,
+          kind,
+          occurrence,
+          tag: el.tagName.toLowerCase(),
+          type: input?.type ?? button?.type ?? "",
+          href: anchor?.href ?? "",
+          displayHref,
+          placeholder,
+          ariaLabel: el.getAttribute("aria-label")?.trim() ?? "",
+          inForm: Boolean(el.closest("form")),
+          submit: input?.type === "submit" || input?.type === "image" || button?.type === "submit",
+          targetBlank: anchor?.target === "_blank",
+          download: Boolean(anchor?.hasAttribute("download")),
+          disabled: "disabled" in el && Boolean((el as HTMLButtonElement).disabled) || el.getAttribute("aria-disabled") === "true",
+        });
+      }
+      const headings = Array.from(document.querySelectorAll<HTMLElement>("h1,h2,h3"))
+        .filter(visible)
+        .map((heading) => `${heading.tagName.toLowerCase()}: ${(heading.innerText || heading.textContent || "").replace(/\s+/g, " ").trim()}`)
+        .filter((text) => !text.endsWith(": "))
+        .slice(0, 18);
+      const pageText = (document.body?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 2600);
+      return {
+        title: document.title,
+        url: `${location.host}${location.pathname}`,
+        headings,
+        pageText,
+        elements: elements.slice(0, 80),
+      };
+    });
+
+    this.semanticRefs = new Map();
+    const lines = [
+      `Page: ${snapshot.title || "(untitled)"}`,
+      `URL: ${snapshot.url}`,
+      ...(snapshot.headings.length ? [`Headings: ${snapshot.headings.join(" | ")}`] : []),
+      ...(snapshot.pageText ? [`Visible page text (first 2600 characters): ${snapshot.pageText}`] : []),
+      "Named interactive elements from this page state:",
+    ];
+    for (const element of snapshot.elements) {
+      const ref = `e${++this.semanticRefSequence}`;
+      const { displayHref: _displayHref, role, ...locator } = element;
+      this.semanticRefs.set(ref, { ...locator, kind: element.kind, role: role as SemanticRole });
+      lines.push(
+        `[${ref}] ${role} ${JSON.stringify(element.name.slice(0, 220))}${element.name.length > 220 ? "…" : ""}${element.disabled ? " [disabled]" : ""}` +
+          `${element.placeholder && element.placeholder !== element.name ? ` [placeholder: ${JSON.stringify(element.placeholder)}]` : ""}` +
+          `${element.displayHref ? ` → ${element.displayHref}` : ""}`,
+      );
+    }
+    if (snapshot.elements.length === 0) lines.push("(No named interactive elements found; use the screenshot and computer tool.)");
+    lines.push("Element refs are for the current page state only. Use fresh refs after every navigation or action.");
+    return lines.join("\n");
+  }
+
+  /** Executes a Codex action against a named Playwright locator instead of guessed pixels. */
+  async executeSemantic(input: SemanticBrowserAction): Promise<string> {
+    const refId = typeof input.ref === "string" ? input.ref : "";
+    const ref = this.semanticRefs.get(refId);
+    if (!ref) return `stale or unknown element ref ${refId || "(empty)"}; inspect the latest page snapshot and use a fresh ref`;
+    if (!["click", "fill", "press", "select", "check", "uncheck", "hover"].includes(input.action)) {
+      return `unsupported browser action: ${String(input.action)}`;
+    }
+
+    if (this.readOnly) {
+      if (["fill", "select", "check", "uncheck"].includes(input.action)) {
+        return `blocked by read-only mode: ${input.action} changes form state`;
+      }
+      if (input.action === "press") {
+        const key = (input.text ?? "").toLowerCase().replace(/[_\s]/g, "");
+        if (!["tab", "shift+tab", "arrowup", "arrowdown", "arrowleft", "arrowright", "pageup", "pagedown", "home", "end", "escape", "esc"].includes(key)) {
+          return `blocked by read-only mode: key ${input.text ?? ""} could submit or change data`;
+        }
+      }
+      if (input.action === "click") {
+        const label = ref.name;
+        if (ref.href) {
+          const url = new URL(ref.href);
+          const siteHost = this.initialHost.replace(/^www\./, "");
+          if (!["http:", "https:"].includes(url.protocol) || url.hostname.toLowerCase().replace(/^www\./, "") !== siteHost) {
+            return "blocked by read-only mode: only same-site navigation is allowed";
+          }
+          if (ref.inForm || ref.targetBlank || ref.download || riskyLabel(label)) {
+            return "blocked by read-only mode: this link may submit data, start a transaction, or leave the current page";
+          }
+          if (RISKY_ACTION_PATH.test(`${url.pathname}${url.search}`) || /(?:^|[?&])(?:action|intent|mode)=(?:trade|connect|authorize|deposit|withdraw|order|checkout|subscribe)(?:&|$)/i.test(url.search)) {
+            return "blocked by read-only mode: this link may start a transaction or account action";
+          }
+        } else if (
+          ref.inForm || ref.submit || riskyLabel(label) ||
+          (ref.tag !== "button" && ref.tag !== "summary" && ref.role !== "button")
+        ) {
+          return "blocked by read-only mode: only ordinary links and non-submit page controls may be activated";
+        }
+      }
+    }
+
+    let locator: Locator;
+    if (ref.kind === "placeholder") locator = this.page.getByPlaceholder(ref.name, { exact: true }).nth(ref.occurrence);
+    else locator = this.page.getByRole(ref.role!, { name: ref.name, exact: true }).nth(ref.occurrence);
+    const count = await locator.count();
+    if (count <= 0 || !(await locator.isVisible().catch(() => false))) {
+      return `element ref ${refId} is stale or no longer visible; inspect the latest page snapshot`;
+    }
+    const current = await locator.evaluate((el) => ({
+      tag: el.tagName.toLowerCase(),
+      type: el instanceof HTMLInputElement || el instanceof HTMLButtonElement ? el.type : "",
+      href: el instanceof HTMLAnchorElement ? el.href : "",
+      placeholder: el.getAttribute("placeholder")?.trim() ?? "",
+      ariaLabel: el.getAttribute("aria-label")?.trim() ?? "",
+    }));
+    if (current.tag !== ref.tag || current.type !== ref.type || current.href !== ref.href || current.placeholder !== ref.placeholder || current.ariaLabel !== ref.ariaLabel) {
+      return `element ref ${refId} no longer points to the same control; inspect the latest page snapshot`;
+    }
+    if (!(await locator.isEnabled().catch(() => false))) return `element ref ${refId} is disabled`;
+
+    try {
+      switch (input.action) {
+        case "click":
+          if (ref.targetBlank || ref.download) return `element ref ${refId} would open a new tab or download, which Shoal does not follow`;
+          await locator.click({ timeout: 5000 });
+          return `clicked ${ref.role} ${JSON.stringify(ref.name)} (${refId})`;
+        case "fill":
+          if (!(ref.role === "textbox" || ref.role === "searchbox")) return `element ref ${refId} is not a text field`;
+          await locator.fill(input.text ?? "", { timeout: 5000 });
+          return `filled ${ref.role} ${JSON.stringify(ref.name)}; entered text is omitted from the action log`;
+        case "press":
+          await locator.press(toPlaywrightCombo(input.text ?? ""), { timeout: 5000 });
+          return `pressed ${input.text ?? "a key"} on ${refId}`;
+        case "select":
+          if (ref.role !== "combobox") return `element ref ${refId} is not a select control`;
+          await locator.selectOption({ label: input.text ?? "" }, { timeout: 5000 });
+          return `selected the requested option on ${refId}`;
+        case "check":
+          if (ref.role !== "checkbox" && ref.role !== "radio") return `element ref ${refId} is not a checkbox or radio`;
+          await locator.check({ timeout: 5000 });
+          return `checked ${JSON.stringify(ref.name)} (${refId})`;
+        case "uncheck":
+          if (ref.role !== "checkbox") return `element ref ${refId} is not a checkbox`;
+          await locator.uncheck({ timeout: 5000 });
+          return `unchecked ${JSON.stringify(ref.name)} (${refId})`;
+        case "hover":
+          await locator.hover({ timeout: 5000 });
+          return `hovered ${JSON.stringify(ref.name)} (${refId})`;
+      }
+    } catch (err) {
+      return `browser action failed on ${refId}: ${(err as Error).message}`;
+    }
+  }
+
   /** Executes one computer-use action. Returns a human-readable description of what ran. */
   async execute(input: ComputerAction): Promise<string> {
     const { page } = this;
     const [x, y] = input.coordinate ?? [0, 0];
     const modifier = input.text && MODIFIERS[input.text.toLowerCase()];
+
+    if (this.readOnly) {
+      if (input.action === "type") return "blocked by read-only mode: typing is disabled";
+      if (input.action === "key") {
+        const key = (input.text ?? "").trim().toLowerCase();
+        const safeKeys = new Set(["tab", "shift+tab", "up", "down", "left", "right", "page_up", "page_down", "home", "end", "escape", "esc"]);
+        if (!safeKeys.has(key)) return `blocked by read-only mode: key ${input.text ?? ""} could submit or change data`;
+      }
+      if (["right_click", "double_click", "left_click_drag"].includes(input.action)) {
+        return `blocked by read-only mode: ${input.action} is disabled`;
+      }
+      if (input.action === "left_click") {
+        const gate = await page.evaluate(({ x: px, y: py, host }) => {
+          const target = document.elementFromPoint(px, py);
+          const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
+          const siteHost = host.replace(/^www\./, "");
+          const riskyActionLabel = (label: string) => {
+            const normalized = label.toLowerCase().replace(/\s+/g, " ").trim();
+            return /\b(?:buy|purchase|place order|order now|checkout|cart|book|reserve|payment|pay|subscribe|sign\s*up|register|log\s*in|login|sign\s*in|accept|agree|submit|send)\b/i.test(normalized) ||
+              /\b(?:connect|link|add|authorize|enable|start|launch|run)\b.{0,40}\b(?:exchange|broker|account|wallet|api\s*keys?|trading\s*bots?)\b/i.test(normalized) ||
+              /\b(?:exchange|broker|account|wallet|api\s*keys?|trading\s*bots?)\b.{0,40}\b(?:connect|link|add|authorize|enable|start|launch|run|trade)\b/i.test(normalized);
+          };
+          const riskyActionPath = (pathname: string, search: string) =>
+            /(?:^|\/)(?:checkout|cart|purchase|orders?|place-order|booking|book|reserve|payment|pay|signup|sign-up|register|login|log-in|signin|sign-in|account|wallet|deposit|withdraw(?:al)?|exchange\/connect|connect\/exchange|broker\/connect|connect\/broker|api[-_]?keys?|connect|authorize|bot\/start|bots?\/(?:start|launch|run|create)|trade-now)(?:\/|[.?_-]|$)/i.test(pathname) ||
+            /(?:^|[?&])(?:action|intent|mode)=(?:trade|connect|authorize|deposit|withdraw|order|checkout|subscribe)(?:&|$)/i.test(search);
+          if (!anchor) {
+            const button = target?.closest("button,[role=button],summary") as HTMLElement | null;
+            if (!button) return "blocked: read-only mode only follows links or opens non-submit page controls";
+            if (button.closest("form") || (button instanceof HTMLButtonElement && button.type === "submit")) {
+              return "blocked: form controls are disabled";
+            }
+            const label = `${button.getAttribute("aria-label") || ""} ${button.innerText || button.textContent || ""}`.toLowerCase();
+            if (riskyActionLabel(label)) {
+              return "blocked: this control may start a transaction, trading action, or account connection";
+            }
+            return "allowed";
+          }
+          if (anchor.closest("form")) return "blocked: links inside forms are disabled";
+          if (anchor.hasAttribute("download") || anchor.target === "_blank") return "blocked: downloads and new tabs are disabled";
+          const label = `${anchor.getAttribute("aria-label") || ""} ${anchor.innerText || anchor.textContent || ""}`;
+          if (riskyActionLabel(label)) return "blocked: this link may start a transaction, trading action, or account connection";
+          const href = new URL(anchor.href, location.href);
+          if (!["http:", "https:"].includes(href.protocol) || href.hostname.toLowerCase().replace(/^www\./, "") !== siteHost) {
+            return "blocked: read-only mode only follows links on the current site";
+          }
+          if (riskyActionPath(href.pathname, href.search)) {
+            return "blocked: this link may start a transaction, trading action, or account connection";
+          }
+          return "allowed";
+        }, { x, y, host: this.initialHost });
+        if (gate !== "allowed") return `${gate} (read-only mode)`;
+      }
+    }
 
     const withModifier = async (fn: () => Promise<void>) => {
       if (modifier) await page.keyboard.down(modifier);

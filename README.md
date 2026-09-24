@@ -122,7 +122,7 @@ lists them all.
 | **Accessibility modality** | A screen-reader persona that perceives the a11y tree, never pixels |
 | **Race mode** | Barrier-synced agents that surface real concurrency bugs |
 | **Verify pass** | Every finding marked confirmed / suspect before you act on it |
-| **Cost meter** | Live dollar counter; $0 on local models or a Claude subscription |
+| **Cost meter** | Live dollar counter; $0 on local models and flat-fee subscriptions |
 
 ## The real thing — unleash an LLM swarm
 
@@ -149,8 +149,8 @@ victory or ragequit, in character).
 | `--task "<text>"` | "Buy any product and complete checkout." | What the swarm attempts |
 | `--swarm <n>` | 8 | Number of agents (hundreds work — see Scale) |
 | `--concurrency <n>` | auto | Demo: measured machine capacity. LLM runs: min(swarm, 12) — rate limits bind first |
-| `--provider <p>` | `anthropic` | or `openai` for any OpenAI-compatible endpoint |
-| `--model <id>` | `claude-opus-5` | see Model tiers below |
+| `--provider <p>` | `anthropic` | `openai`, Claude `subscription`, or Codex `codex` |
+| `--model <id>` | provider default | Codex uses your Codex CLI model unless `--model` is supplied |
 | `--base-url <url>` | OpenRouter | OpenAI-compatible endpoint (Ollama, DashScope, Zhipu, vLLM…) |
 | `--effort <level>` | `medium` | Anthropic only. `low` → cheaper, `high` → more thorough |
 | `--no-verify` | verify on | Skip the Claude review of findings |
@@ -161,6 +161,7 @@ victory or ragequit, in character).
 | `--allow-domain <d>` | — | Permit a non-local target (else confirm interactively) |
 | `--max-steps <n>` | 30 | Hard cap per agent (personas also have patience budgets) |
 | `--headed` | off | Show the actual browser windows |
+| `--read-only` | off | Follow safe site links, while blocking typing, form controls, transaction links, and non-read HTTP methods |
 | `--port <n>` | 4321 | Dashboard port |
 | `--host <addr>` | all interfaces | Bind address, e.g. a specific NIC or loopback-alias IP |
 | `--data <dir>` | packaged library | External `strategies.yaml`/`personas.yaml`/`missions/*.yaml` (env: `SHOAL_DATA`). Missing files fall back to the packaged defaults |
@@ -323,7 +324,7 @@ node packages/core/dist/cli.js serve \
 
 ## Model tiers — premium, subscription, cheap, free
 
-Agents see pixels, so any **vision + tool-calling** model can drive one. Three providers:
+Agents see pixels, so any **vision + tool-calling** model can drive one. Four providers:
 
 **`--provider anthropic`** (default) uses Claude's native
 [computer use](https://platform.claude.com/docs/en/agents-and-tools/computer-use) —
@@ -358,6 +359,30 @@ throttle your own coding. For better grounding and better-worded findings, use
 > `~/.claude/.credentials.json`, so subscription mode currently finds no credentials
 > there — use `--provider anthropic` or `--provider openai` on a Mac. Everything else
 > (demo, scenes, LLM swarms) is fully cross-platform.
+
+**`--provider codex`** drives browser agents through the Codex CLI authenticated with your
+ChatGPT subscription. It does not read or pass an OpenAI API key; Shoal checks that `codex
+login status` reports ChatGPT sign-in and removes API-key environment variables from the
+Codex child process. Each simulated user keeps a resumable Codex CLI session, so use small
+swarms to manage your subscription quota. If `--model` is omitted, Codex uses its configured
+default model.
+
+In vision mode, Codex receives a compact summary of visible page text and named controls,
+with fresh element references it can click, fill, select, or press through Playwright. The
+screenshot remains available for visual context and for canvas or other controls that do
+not expose a useful accessible name; coordinate actions are the fallback.
+
+```bash
+codex login                         # choose ChatGPT sign-in
+npm run shoal -- run https://your-site.example \
+  --provider codex --swarm 3 --concurrency 1 --read-only --port 4322
+```
+
+`--read-only` permits ordinary same-site navigation and non-submit page controls. It
+blocks typing, form actions, risky transaction links, external page navigation, and
+non-GET/HEAD/OPTIONS requests. When an evaluation task asks for purchase feedback,
+`task_result` records each persona's intent, chosen offer, rationale, and recommendation;
+the Markdown and JSON reports label these as simulated buyer responses.
 
 **`--provider openai`** speaks to any OpenAI-compatible endpoint through a generic
 computer tool. This is the scale tier:
@@ -416,10 +441,11 @@ what-if table pricing the same token volume at each tier:
 |---|---|
 | `claude-opus-5` | $$$ (premium: best driving + narration) |
 | `claude-haiku-4-5` | ~5× cheaper |
+| Codex CLI (ChatGPT subscription) | $0 per-token charge; uses plan quota |
 | Qwen/GLM-tier APIs | ~25–50× cheaper |
 | local model (Ollama) | $0.00 |
 
-A browser agent step is one vision API call; a session is ~15–25 steps. For models
+A browser agent step is one vision model turn; a session is ~15–25 steps. For models
 shoal doesn't know prices for, pass `--price-in`/`--price-out` ($ per million tokens)
 to enable the meter. Start small with `--effort low`, scale what works.
 
