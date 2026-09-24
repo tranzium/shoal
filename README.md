@@ -58,6 +58,10 @@ npx playwright install chromium
 npm run demo
 ```
 
+No npm on your machine, only [Bun](https://bun.sh)? Every `npm run <script>` below works
+unchanged as `bun run <script>` — Bun recognizes `npm run` inside `package.json` scripts and
+runs them itself. Swap only the install step: `bun install` and `bunx playwright install chromium`.
+
 Open **http://localhost:4321** and watch 8 scripted agents (real Chromium browsers, zero
 API cost) tear into the bundled bait shop — a deliberately flawed demo store with four
 planted UX traps:

@@ -7,9 +7,9 @@
     "apps/dashboard"
   ],
   "scripts": {
-    "build": "npm run build -w apps/dashboard && npm run build -w packages/core",
+    "build": "cd apps/dashboard && npm run build && cd ../../packages/core && npm run build",
     "demo": "npm run build && node packages/core/dist/cli.js demo",
-    "dev:dashboard": "npm run dev -w apps/dashboard",
+    "dev:dashboard": "cd apps/dashboard && npm run dev",
     "shoal": "node packages/core/dist/cli.js",
     "test": "bun test packages/core/src"
   },
