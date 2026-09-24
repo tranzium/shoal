@@ -2,10 +2,15 @@ import { spawn } from "node:child_process";
 import { platform } from "node:os";
 import { runSwarm } from "./orchestrator.js";
 import { ShoalServer } from "./server.js";
-import { loadStrategies } from "./strategies.js";
+import { DataStore } from "./dataStore.js";
 import { safeConcurrency } from "./capacity.js";
 import { closeSharedBrowser } from "./browser.js";
 import type { ControlCommand, RunOptions, RunPhase } from "./types.js";
+
+/** How often to poll the data dir for edits — a strategy/mission tweak should show up in
+ *  seconds, not on the next restart, but this is a stat() on a handful of files, not I/O
+ *  worth spending less than a couple of seconds on. */
+const DATA_WATCH_INTERVAL_MS = 2000;
 
 export { safeConcurrency } from "./capacity.js";
 
@@ -56,8 +61,14 @@ export class RunController {
   /** `runImmediately: false` (used by `shoal serve`) starts the server and stays in `idle`. */
   async start(runImmediately = true): Promise<void> {
     await this.server.start(this.opts.port, this.opts.host);
+    this.server.dataStore = new DataStore(this.opts.dataDir);
+    this.server.dataStore.startWatching(DATA_WATCH_INTERVAL_MS, () => this.onDataChange());
+    this.server.onDataReload = (changed) => {
+      if (changed) this.onDataChange();
+    };
     this.server.onControl = (cmd) => this.handle(cmd);
     this.broadcastState();
+    this.broadcastDataStatus();
     if (this.opts.open !== false) openDashboard(`http://localhost:${this.opts.port}`);
     if (runImmediately) await this.run();
   }
@@ -66,8 +77,31 @@ export class RunController {
   async shutdown(): Promise<void> {
     this.abort?.abort();
     await this.current?.catch(() => {});
+    this.server.dataStore?.stopWatching();
     await closeSharedBrowser();
     await this.server.stop();
+  }
+
+  /** A data-dir reload (watcher tick, POST /api/reload, or WS `reload` command) that actually
+   *  changed something: refresh the dashboard's strategy list and error status. Never touches
+   *  a run already in flight — only the next run sees the new data. */
+  private onDataChange(): void {
+    this.broadcastState();
+    this.broadcastDataStatus();
+  }
+
+  private broadcastDataStatus(): void {
+    const store = this.server.dataStore;
+    if (!store) return;
+    const { strategiesError, personasError, missionsError } = store.health();
+    this.server.broadcast({
+      type: "data_status",
+      strategiesError,
+      personasError,
+      missionsError,
+      missions: store.getMissions().map((m) => ({ name: m.name, title: m.title })),
+      loadedAt: Date.now(),
+    });
   }
 
   private broadcastState(): void {
@@ -83,7 +117,7 @@ export class RunController {
       strategy: this.opts.strategyIds?.[0],
       task: this.opts.task,
       runNumber: this.runNumber,
-      strategies: loadStrategies().map((s) => ({ id: s.id, name: s.name })),
+      strategies: this.server.dataStore?.getStrategies().map((s) => ({ id: s.id, name: s.name })),
     });
   }
 
@@ -111,6 +145,12 @@ export class RunController {
   }
 
   private async handle(cmd: ControlCommand): Promise<void> {
+    if (cmd.cmd === "reload") {
+      const changed = this.server.dataStore?.reload() ?? false;
+      if (changed) this.onDataChange();
+      return;
+    }
+
     if (cmd.cmd === "stop") {
       if (this.phase !== "running") return;
       console.log("  ⏹  stop requested from dashboard");

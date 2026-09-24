@@ -1,10 +1,10 @@
 import { runLlmAgent, type AgentCallbacks, type AgentContext } from "./agent.js";
 import { runMockAgent } from "./mockAgent.js";
 import { runGhostRacer } from "./ghostRacer.js";
-import { pickPersonas, fillFromPool } from "./personas.js";
-import { assignStrategies, getStrategy } from "./strategies.js";
+import { fillFromPool } from "./personas.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas } from "./personaGen.js";
 import { ShoalServer } from "./server.js";
+import { DataStore } from "./dataStore.js";
 import { writeReport, frictionMap } from "./report.js";
 import { redactFinding, redactText } from "./redact.js";
 import { verifyFindings } from "./verify.js";
@@ -78,6 +78,10 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
   const server = hooks.server ?? new ShoalServer();
   if (!hooks.server) await server.start(opts.port);
   else server.race.reset(); // fresh contended resource for each run
+  // A caller that reuses a server (RunController) already attached one; a one-off caller
+  // (runManager's MCP-tracked runs) gets a fresh one keyed on this run's --data.
+  if (!server.dataStore) server.dataStore = new DataStore(opts.dataDir);
+  const dataStore = server.dataStore;
 
   const dashboardUrl = `http://localhost:${opts.port}`;
   // Credentials ride out-of-band on opts.login (never in opts.task) — this is the backstop
@@ -152,15 +156,15 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     log(`  🧬 ${gen.map((p) => `${p.emoji} ${p.name}`).join(" · ")}\n`);
     personas = fillFromPool(gen, opts.swarm);
   } else {
-    personas = pickPersonas(opts.swarm, opts.personaIds);
+    personas = dataStore.pickPersonas(opts.swarm, opts.personaIds);
   }
 
   // The second axis. Race mode forces the race strategy on everyone; scenes use roles.
   const strategies = instances
     ? instances.map(() => undefined)
     : opts.race
-      ? Array.from({ length: opts.swarm }, () => getStrategy("race"))
-      : assignStrategies(opts.swarm, opts.strategyIds);
+      ? Array.from({ length: opts.swarm }, () => dataStore.getStrategy("race"))
+      : dataStore.assignStrategies(opts.swarm, opts.strategyIds);
   if (opts.strategyIds?.length || opts.race) {
     const names = [...new Set(strategies.map((s) => s?.name).filter(Boolean))];
     log(`  🎯 strategies: ${names.join(" · ")}\n`);

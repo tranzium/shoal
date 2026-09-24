@@ -59,7 +59,26 @@ export class TaskQueue {
   ) {}
 
   submit(input: TaskInput): SubmitResult {
-    const url = typeof input.url === "string" ? input.url.trim() : "";
+    let body = input;
+    if (typeof input.mission === "string" && input.mission.trim()) {
+      const name = input.mission.trim();
+      const mission = this.server.dataStore?.getMission(name);
+      if (!mission) return { ok: false, error: `unknown mission: ${name}` };
+      // Mission fields are defaults; anything the caller also set (e.g. a login, or an
+      // explicit swarm override) wins — same "in place of url/task" contract as the docs.
+      const { mission: _mission, ...overrides } = input;
+      body = {
+        title: mission.title,
+        url: mission.url,
+        task: mission.task,
+        strategy: mission.strategy,
+        swarm: mission.swarm,
+        personas: mission.personas,
+        ...overrides,
+      };
+    }
+
+    const url = typeof body.url === "string" ? body.url.trim() : "";
     if (!url) return { ok: false, error: "url is required" };
     try {
       new URL(url);
@@ -67,28 +86,28 @@ export class TaskQueue {
       return { ok: false, error: "url must be a valid absolute URL" };
     }
 
-    const task = typeof input.task === "string" ? input.task.trim() : "";
+    const task = typeof body.task === "string" ? body.task.trim() : "";
     if (!task) return { ok: false, error: "task is required" };
 
     // Only url/task are rejected with 400; swarm just clamps to a sane range (0 is used by
     // tests — a zero-agent run resolves with no browser launched, same convention runSwarm
     // itself uses elsewhere).
     let swarm = 1;
-    if (input.swarm !== undefined) {
-      const n = Number(input.swarm);
+    if (body.swarm !== undefined) {
+      const n = Number(body.swarm);
       swarm = Number.isFinite(n) ? Math.max(0, Math.min(Math.round(n), 5000)) : 1;
     }
 
-    const strategy = typeof input.strategy === "string" ? input.strategy : undefined;
+    const strategy = typeof body.strategy === "string" ? body.strategy : undefined;
     const personas =
-      Array.isArray(input.personas) && input.personas.every((p) => typeof p === "string")
-        ? (input.personas as string[])
+      Array.isArray(body.personas) && body.personas.every((p) => typeof p === "string")
+        ? (body.personas as string[])
         : undefined;
-    const title = typeof input.title === "string" && input.title.trim() ? input.title.trim() : task.slice(0, 60);
+    const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : task.slice(0, 60);
 
     let login: { email: string; password: string } | undefined;
-    if (input.login && typeof input.login === "object") {
-      const l = input.login as Record<string, unknown>;
+    if (body.login && typeof body.login === "object") {
+      const l = body.login as Record<string, unknown>;
       if (typeof l.email === "string" && l.email && typeof l.password === "string" && l.password) {
         login = { email: l.email, password: l.password };
       }

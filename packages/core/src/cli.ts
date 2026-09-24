@@ -6,7 +6,7 @@ import { TaskQueue } from "./taskQueue.js";
 import { safeConcurrency } from "./capacity.js";
 import { hasSubscription } from "./subscriptionAuth.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas, personasToYaml } from "./personaGen.js";
-import { loadStrategies } from "./strategies.js";
+import { DataStore } from "./dataStore.js";
 import { listScenes, sceneScales } from "./scenes.js";
 import { fetchPostHog, fetchSentry, mergeExports } from "./connectors.js";
 import { confirmTarget, isTargetAllowed, hostOf } from "./safety.js";
@@ -81,6 +81,10 @@ const HELP = `
     --allow-domain <d>   Permit a non-local target (repeatable). Public hosts otherwise
                          require interactive confirmation — you are pointing a swarm at them.
     --yes                Skip that confirmation (CI / trusted automation)
+    --data <dir>         Load strategies.yaml/personas.yaml/missions/*.yaml from here instead
+                         of the packaged library (env: SHOAL_DATA). Missing files fall back to
+                         the packaged defaults. \`shoal serve\` watches this dir and reloads on
+                         edit — no restart needed; a broken YAML edit keeps the last good copy.
 
   Providers & keys:
     anthropic            ANTHROPIC_API_KEY (or \`ant auth login\`) — native computer use, metered
@@ -107,9 +111,14 @@ export function args(name: string): string[] {
   return out;
 }
 
+/** `--data <dir>` or `SHOAL_DATA` — external strategies.yaml/personas.yaml/missions/*.yaml. */
+export function dataDirArg(): string | undefined {
+  return arg("data") ?? process.env.SHOAL_DATA;
+}
+
 function listStrategiesCmd(): void {
   console.log("\n  🎯 Attack strategies — pair any of these with any persona:\n");
-  for (const s of loadStrategies()) {
+  for (const s of new DataStore(dataDirArg()).getStrategies()) {
     const first = s.directive.trim().split("\n")[0].slice(0, 96);
     console.log(`    ${s.id.padEnd(19)} ${s.name}`);
     console.log(`    ${" ".repeat(19)} ${first}…\n`);
@@ -233,6 +242,7 @@ export function serveOpts(): RunOptions {
     port: Number(arg("port", "4321")),
     host: arg("host"),
     open: !process.argv.includes("--no-open"),
+    dataDir: dataDirArg(),
   };
 }
 
@@ -394,6 +404,7 @@ async function main() {
     port: Number(arg("port", "4321")),
     host: arg("host"),
     open: !process.argv.includes("--no-open"),
+    dataDir: dataDirArg(),
   };
 
   // A swarm is a lot of automated traffic. Make an unfamiliar target a deliberate choice.
