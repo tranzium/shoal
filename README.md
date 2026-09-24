@@ -162,14 +162,36 @@ victory or ragequit, in character).
 Reports land in `./shoal-report.md` + `./shoal-report.json`, findings clustered by
 similarity and ranked by how many agents hit them.
 
-## Resident service — `shoal serve` + task intake
+## Run as a service — `shoal serve`
+
+`shoal run` exits once the swarm finishes (the dashboard stays up to view the report, but
+nothing else happens). `shoal serve` is the resident form: it starts the dashboard and
+stays up — idle, or immediately running if you pass `--url` — until it gets SIGINT/SIGTERM.
+Runs are (re)started from the dashboard's restart button, or by submitting tasks over HTTP.
 
 ```bash
-npm run shoal -- serve --port 4321
+npm run build
+node packages/core/dist/cli.js serve --port 4340 --no-open \
+  --url https://your-app.test --provider subscription --model claude-haiku-4-5 \
+  --task "Sign up and buy something"
 ```
 
-Starts the dashboard as a long-running process that stays up between runs — idle with no
-swarm until work arrives, instead of exiting when a run finishes. Feed it tasks over HTTP:
+| Flag | Default | Notes |
+|---|---|---|
+| `--port <n>` | 4321 | Fixed dashboard port; the server listens on all interfaces |
+| `--no-open` | off | Always pass this for a service — otherwise every start opens a browser tab |
+| `--url <url>` | — | Target for the first (and each restart's) run. Without it, serve stays idle until a restart command or task submission supplies one |
+| `--headed` | off | Show the real browser windows |
+| `--provider`, `--model`, `--base-url`, `--effort`, `--max-steps`, `--no-verify`, `--personas`, `--task`, `--swarm`, `--concurrency` | as `run` | Starting values for every run the dashboard triggers; model/concurrency default the same way `run` does (Haiku + 3 on `--provider subscription`, Opus + min(swarm, 12) otherwise) |
+| `--allow-domain <d>`, `--yes` | — | Same non-local-target policy as `run`, but checked once at startup and never prompts — refuses to start instead (a service has no terminal) |
+
+Health probe: `GET /api/health` → `{ "phase": "idle"|"running"|"stopping", "runId": n|null, "startedAt": ms, "uptimeMs": ms }`.
+`phase` reports `idle` again once a run finishes (ready for the next restart) even though
+the dashboard itself keeps showing the finished report until you trigger another run.
+
+### Task intake — `POST /api/tasks`
+
+Feed it tasks over HTTP instead of (or as well as) the dashboard's restart button:
 
 ```bash
 curl -X POST http://localhost:4321/api/tasks \
@@ -196,6 +218,13 @@ WebSocket event, even if an agent narrates it back.
 
 The queue is **in-memory only**: restarting `shoal serve` drops anything still queued or
 mid-run (finished tasks' reports on disk survive, since those are just files).
+
+Notes:
+- The report is written to `shoal-report.md` / `.json` in the **working directory**, and each run overwrites the last one.
+- `.env` in the working directory is loaded at startup (API keys, `SHOAL_INSECURE_TLS`).
+- `--provider subscription` reads `~/.claude/.credentials.json`, so run the service as the user who is logged in to Claude Code.
+- Shutdown: Ctrl+C / SIGINT (and SIGBREAK on Windows) stops any running swarm, closes the browsers, and exits 0. An external SIGTERM on Windows is a hard kill regardless of the handler — that's Node's documented platform behavior, not a bug here.
+- The dashboard has no authentication. Anyone who can reach the port can start a swarm on your credentials.
 
 ## Model tiers — premium, subscription, cheap, free
 

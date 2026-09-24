@@ -9,7 +9,7 @@ import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas, persona
 import { loadStrategies } from "./strategies.js";
 import { listScenes, sceneScales } from "./scenes.js";
 import { fetchPostHog, fetchSentry, mergeExports } from "./connectors.js";
-import { confirmTarget } from "./safety.js";
+import { confirmTarget, isTargetAllowed, hostOf } from "./safety.js";
 import { startMcpServer } from "./mcp.js";
 import type { RunOptions } from "./types.js";
 
@@ -31,8 +31,11 @@ const HELP = `
     shoal demo --race --swarm 5         Race-condition demo: agents strike one item together
     shoal demo --scene marketplace      Multi-user demo: a seller and a buyer, and the bug between them
     shoal run <url> [options]           Unleash a real LLM swarm on a URL
-    shoal serve [--port <n>] [--headed] Start the dashboard as a resident service (idle, no
-                                        swarm) — stays up until SIGINT/SIGTERM
+    shoal serve [--url <url>] [options] Start the dashboard as a resident service — stays up
+                                        until SIGINT/SIGTERM. With --url, restart from the
+                                        dashboard runs that target; without it, stays idle
+                                        until a restart command supplies one. Pass --no-open
+                                        for unattended (service/Warden) use
     shoal personas generate [options]   Synthesize a persona panel and print/save it as YAML
     shoal strategies                    List the attack strategies (the second axis)
     shoal scenes                        List multi-user scenes (seller/buyer, doc, chat…)
@@ -186,18 +189,43 @@ async function generatePersonasCmd() {
   }
 }
 
-/** Builds the options `shoal serve` boots with — no URL/swarm yet; a later `restart` control
- *  command (dashboard, or the task-submission API in a follow-up task) fills those in. */
-export function serveOpts(): RunOptions {
+/**
+ * `run`/`serve` share the same subscription-aware defaults: Haiku + concurrency 3 on
+ * `--provider subscription` (the binding constraint there is the shared Claude Code rate
+ * pool, not cost), otherwise Opus + min(swarm, 12) for LLM runs.
+ */
+function defaultModelAndConcurrency(
+  provider: RunOptions["provider"],
+  swarm: number,
+): { model: string; concurrency: number } {
+  const isSub = provider === "subscription";
   return {
-    url: "",
+    model: provider === "openai" ? "qwen/qwen3-vl-plus" : isSub ? "claude-haiku-4-5" : "claude-opus-5",
+    concurrency: isSub ? Math.min(swarm, 3) : Math.min(swarm, 12),
+  };
+}
+
+/** Builds the options `shoal serve` boots with. `--url` (or a later `restart` control
+ *  command from the dashboard / task API) supplies the target; without either, serve
+ *  stays idle. */
+export function serveOpts(): RunOptions {
+  const provider = (arg("provider", "anthropic") as RunOptions["provider"]);
+  const swarm = Number(arg("swarm", "8"));
+  const { model: defaultModel, concurrency: defaultConcurrency } = defaultModelAndConcurrency(provider, swarm);
+  return {
+    url: arg("url", "")!,
     task: arg("task", "Buy any product and complete checkout.")!,
-    swarm: Number(arg("swarm", "8")),
-    concurrency: Number(arg("concurrency", "8")),
-    provider: (arg("provider", "anthropic") as RunOptions["provider"]),
-    model: arg("model", "claude-opus-5")!,
+    swarm,
+    concurrency: Number(arg("concurrency", String(defaultConcurrency))),
+    concurrencyPinned: process.argv.includes("--concurrency"),
+    provider,
+    baseUrl: arg("base-url"),
+    model: arg("model", defaultModel)!,
     effort: (arg("effort", "medium") as RunOptions["effort"]),
     verify: !process.argv.includes("--no-verify"),
+    personaIds: arg("personas")?.split(",").map((s) => s.trim()),
+    allowDomains: args("allow-domain"),
+    yes: process.argv.includes("--yes"),
     maxSteps: Number(arg("max-steps", "30")),
     headless: !process.argv.includes("--headed"),
     mock: false,
@@ -208,12 +236,23 @@ export function serveOpts(): RunOptions {
 
 async function serveCmd(): Promise<void> {
   const opts = serveOpts();
+
+  // A service has no terminal to confirm against, so this is a hard gate, not a prompt:
+  // an unset or allowlisted URL proceeds, anything else public needs --allow-domain/--yes
+  // up front (same policy `run` enforces interactively via confirmTarget).
+  if (opts.url && !isTargetAllowed(opts.url, opts.allowDomains) && !opts.yes) {
+    console.error(`  ✗ Target is not local: ${hostOf(opts.url)}`);
+    console.error(`    shoal serve never prompts — pass --allow-domain ${hostOf(opts.url)} or --yes to confirm.`);
+    process.exit(1);
+  }
+
   const controller = new RunController(opts);
   await controller.start(false); // stay in `idle` — no swarm until a restart command arrives
   // One task at a time, FIFO: POST /api/tasks queues work, the queue runs it and returns
   // to idle before starting the next. Queue is in-memory — a restart drops anything queued.
   controller.shoalServer.tasks = new TaskQueue(controller.shoalServer, opts);
-  console.log(`  🐟 shoal serve — dashboard at http://localhost:${opts.port} (idle, waiting for a task)`);
+  const waiting = opts.url ? `target set: ${opts.url}` : "idle, waiting for a task";
+  console.log(`  🐟 shoal serve — dashboard at http://localhost:${opts.port} (${waiting})`);
   console.log(`  📬 POST http://localhost:${opts.port}/api/tasks to submit one`);
 
   let shuttingDown = false;
@@ -225,6 +264,9 @@ async function serveCmd(): Promise<void> {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // SIGBREAK (Ctrl+Break) is the one console-close signal Windows delivers to a handler —
+  // an external kill/SIGTERM there is unconditional and cannot be intercepted.
+  if (process.platform === "win32") process.on("SIGBREAK", () => shutdown("SIGBREAK"));
   // No await this.run(): the http/ws server keeps the event loop (and the process) alive.
 }
 
