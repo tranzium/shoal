@@ -321,6 +321,9 @@ export function App() {
                 send({ cmd: "focus", agentId: id });
               }}
             />
+            {run?.phase === "idle" && list.length === 0 && (
+              <div className="tank-idle">🐟 waiting for a task…</div>
+            )}
             {selected && (
               <div className="drilldown">
                 <div className="dd-head">

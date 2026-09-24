@@ -4,6 +4,7 @@ import { runSwarm } from "./orchestrator.js";
 import { ShoalServer } from "./server.js";
 import { loadStrategies } from "./strategies.js";
 import { safeConcurrency } from "./capacity.js";
+import { closeSharedBrowser } from "./browser.js";
 import type { ControlCommand, RunOptions, RunPhase } from "./types.js";
 
 export { safeConcurrency } from "./capacity.js";
@@ -47,15 +48,25 @@ export class RunController {
 
   constructor(private opts: RunOptions) {}
 
-  async start(): Promise<void> {
+  /** `runImmediately: false` (used by `shoal serve`) starts the server and stays in `idle`. */
+  async start(runImmediately = true): Promise<void> {
     await this.server.start(this.opts.port);
     this.server.onControl = (cmd) => this.handle(cmd);
     this.broadcastState();
     if (this.opts.open !== false) openDashboard(`http://localhost:${this.opts.port}`);
-    await this.run();
+    if (runImmediately) await this.run();
+  }
+
+  /** SIGINT/SIGTERM path: abort any swarm in flight, free the browser pool, close the server. */
+  async shutdown(): Promise<void> {
+    this.abort?.abort();
+    await this.current?.catch(() => {});
+    await closeSharedBrowser();
+    await this.server.stop();
   }
 
   private broadcastState(): void {
+    this.server.setHealth(this.phase, this.phase === "idle" ? null : this.runNumber);
     this.server.broadcast({
       type: "run_state",
       phase: this.phase,

@@ -10,7 +10,8 @@
     "build": "npm run build -w apps/dashboard && npm run build -w packages/core",
     "demo": "npm run build && node packages/core/dist/cli.js demo",
     "dev:dashboard": "npm run dev -w apps/dashboard",
-    "shoal": "node packages/core/dist/cli.js"
+    "shoal": "node packages/core/dist/cli.js",
+    "test": "bun test packages/core/src"
   },
   "license": "MIT",
   "repository": {

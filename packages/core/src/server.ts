@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
-import type { ControlCommand, ShoalEvent } from "./types.js";
+import type { ControlCommand, RunPhase, ShoalEvent } from "./types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_DIST = join(here, "..", "..", "..", "apps", "dashboard", "dist");
@@ -209,12 +209,38 @@ export class ShoalServer {
    * push 1000 JPEGs down the socket.
    */
   focusedAgentId: string | null = null;
+  private startedAt = 0;
+  private health: { phase: RunPhase; runId: number | null } = { phase: "idle", runId: null };
+
+  /** Set by the RunController on every phase transition, read back by `/api/health`. */
+  setHealth(phase: RunPhase, runId: number | null): void {
+    this.health = { phase, runId };
+  }
+
+  /** Actual bound port — useful with `port: 0` (ephemeral, e.g. in tests). */
+  get port(): number {
+    const addr = this.http.address();
+    if (!addr || typeof addr !== "object") throw new Error("server not listening");
+    return addr.port;
+  }
 
   async start(port: number): Promise<void> {
+    this.startedAt = Date.now();
     this.http = createServer(async (req, res) => {
       const url = (req.url ?? "/").split("?")[0];
       let file: { body: Buffer; mime: string } | null = null;
 
+      if (url === "/api/health") {
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            phase: this.health.phase,
+            runId: this.health.runId,
+            startedAt: this.startedAt,
+            uptimeMs: Date.now() - this.startedAt,
+          }),
+        );
+        return;
+      }
       if (url === "/api/claim") {
         const buyer = new URL(req.url ?? "/", "http://x").searchParams.get("buyer") ?? "anon";
         const result = await this.race.claim(buyer);
