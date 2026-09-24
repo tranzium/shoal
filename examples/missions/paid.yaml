@@ -1,0 +1,18 @@
+# Ported from tools/run-shoal.cmd (the "paid" mission). This mission needs a signed-in
+# account, so pass credentials out-of-band at submit time (never bake them into the YAML —
+# they'd otherwise sit in plain text in the data dir):
+#   curl -X POST http://localhost:4321/api/tasks -d '{
+#     "mission": "paid", "url": "https://real-app.test/",
+#     "login": {"email": "you@example.com", "password": "..."}
+#   }'
+title: Paid checkout
+url: https://your-app.test/
+task: >
+  This product connects chart alerts to your broker or exchange account and places orders
+  automatically. You are a retail trader who has decided to pay for it. You already have an
+  account — sign in first. Once signed in, work out which plan fits you, go to pricing and
+  start checkout, and apply the discount code TESTCODE-1234. Report whether the plan you
+  chose matched what the pricing page promised, whether the discount visibly applied, and
+  anything that made you hesitate to pay. Test-environment note: the payment step itself may
+  error out — that is this test machine, not a product bug; report everything up to it.
+swarm: 10

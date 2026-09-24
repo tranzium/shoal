@@ -1,0 +1,17 @@
+# Ported from tools/run-shoal.cmd (the "signup" mission). Drop this file (or your own copy)
+# into <dataDir>/missions/signup.yaml and submit it with:
+#   curl -X POST http://localhost:4321/api/tasks -d '{"mission": "signup"}'
+# Override any field per-submission, e.g. {"mission": "signup", "url": "https://real-app.test/"}.
+title: Signup journey
+url: https://your-app.test/
+task: >
+  This product connects chart alerts to your broker or exchange account and places orders
+  automatically. You are a retail trader considering it. Find out what it does, what it
+  costs, and whether it works with your broker. Then try to sign up for an account,
+  preferring email signup over phone. Test-environment notes: verification codes (email or
+  SMS) never arrive here — if you reach a code-entry step, record how the flow felt up to
+  that point and try something else; the missing code is an environment limit, not a product
+  bug. If a coupon or discount code field appears, use TESTCODE-1234. Affiliate signup
+  happens on an external portal that is blocked in this test — stop at the link and note how
+  clear the offer was.
+swarm: 10
