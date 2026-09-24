@@ -158,18 +158,42 @@ victory or ragequit, in character).
 | `--max-steps <n>` | 30 | Hard cap per agent (personas also have patience budgets) |
 | `--headed` | off | Show the actual browser windows |
 | `--port <n>` | 4321 | Dashboard port |
+| `--host <addr>` | all interfaces | Bind address, e.g. a specific NIC or loopback-alias IP |
 
 Reports land in `./shoal-report.md` + `./shoal-report.json`, findings clustered by
 similarity and ranked by how many agents hit them.
 
-## Resident service — `shoal serve` + task intake
+## Run as a service — `shoal serve`
+
+`shoal run` exits once the swarm finishes (the dashboard stays up to view the report, but
+nothing else happens). `shoal serve` is the resident form: it starts the dashboard and
+stays up — idle, or immediately running if you pass `--url` — until it gets SIGINT/SIGTERM.
+Runs are (re)started from the dashboard's restart button, or by submitting tasks over HTTP.
 
 ```bash
-npm run shoal -- serve --port 4321
+npm run build
+node packages/core/dist/cli.js serve --port 4340 --no-open \
+  --url https://your-app.test --provider subscription --model claude-haiku-4-5 \
+  --task "Sign up and buy something"
 ```
 
-Starts the dashboard as a long-running process that stays up between runs — idle with no
-swarm until work arrives, instead of exiting when a run finishes. Feed it tasks over HTTP:
+| Flag | Default | Notes |
+|---|---|---|
+| `--port <n>` | 4321 | Fixed dashboard port |
+| `--host <addr>` | all interfaces | Bind address — pin the service to one IP (see Warden example below) |
+| `--no-open` | off | Always pass this for a service — otherwise every start opens a browser tab. Honored on both `run` and `serve` |
+| `--url <url>` | — | Target for the first (and each restart's) run. Without it, serve stays idle until a restart command or task submission supplies one |
+| `--headed` | off | Show the real browser windows |
+| `--provider`, `--model`, `--base-url`, `--effort`, `--max-steps`, `--no-verify`, `--personas`, `--task`, `--swarm`, `--concurrency` | as `run` | Starting values for every run the dashboard triggers; model/concurrency default the same way `run` does (Haiku + 3 on `--provider subscription`, Opus + min(swarm, 12) otherwise) |
+| `--allow-domain <d>`, `--yes` | — | Same non-local-target policy as `run`, but checked once at startup and never prompts — refuses to start instead (a service has no terminal) |
+
+Health probe: `GET /api/health` → `{ "phase": "idle"|"running"|"stopping", "runId": n|null, "startedAt": ms, "uptimeMs": ms }`.
+`phase` reports `idle` again once a run finishes (ready for the next restart) even though
+the dashboard itself keeps showing the finished report until you trigger another run.
+
+### Task intake — `POST /api/tasks`
+
+Feed it tasks over HTTP instead of (or as well as) the dashboard's restart button:
 
 ```bash
 curl -X POST http://localhost:4321/api/tasks \
@@ -196,6 +220,47 @@ WebSocket event, even if an agent narrates it back.
 
 The queue is **in-memory only**: restarting `shoal serve` drops anything still queued or
 mid-run (finished tasks' reports on disk survive, since those are just files).
+
+Notes:
+- The report is written to `shoal-report.md` / `.json` in the **working directory**, and each run overwrites the last one.
+- `.env` in the working directory is loaded at startup (API keys, `SHOAL_INSECURE_TLS`).
+- `--provider subscription` reads `~/.claude/.credentials.json`, so run the service as the user who is logged in to Claude Code.
+- Shutdown: Ctrl+C / SIGINT (and SIGBREAK on Windows) stops any running swarm, closes the browsers, and exits 0. An external SIGTERM on Windows is a hard kill regardless of the handler — that's Node's documented platform behavior, not a bug here.
+- The dashboard has no authentication. Anyone who can reach the port can start a swarm on your credentials.
+
+### Running under Warden (always-on, no terminal)
+
+`serve` is meant to be launched once by a process supervisor and left running — Warden,
+systemd, pm2, NSSM, whatever manages long-lived services on your box. It never exits on
+its own; it only stops on SIGINT/SIGTERM (or SIGBREAK on Windows).
+
+```bash
+node packages/core/dist/cli.js serve \
+  --host 127.172.0.4 --port 80 --no-open \
+  --url https://shoal.test/ --allow-domain shoal.test \
+  --provider subscription --model claude-haiku-4-5 \
+  --task "Sign up and buy something"
+```
+
+- **Command / working directory** — run `node` directly (not a `.cmd` wrapper), so the
+  supervisor's stop signal reaches the real process. Set the working directory to the repo
+  root (or wherever `.env` and the report files should live) — `shoal-report.md`/`.json`
+  land there and each run overwrites the last one.
+- **Autostart** — configure the service to start on boot/login and restart on crash; `serve`
+  has no retry loop of its own, it just stays up until killed.
+- **Env vars, replacing `tools\run-shoal.cmd`** — that script's one-off env exports (API
+  keys, `SHOAL_INSECURE_TLS`, `PLAYWRIGHT_BROWSERS_PATH`, etc.) become the supervisor's
+  service-level env block instead, since there's no longer a shell around the process to
+  set them. `.env` in the working directory still works for anything you'd rather keep out
+  of the supervisor config.
+- **`--host 127.172.0.4 --port 80`** binds the dashboard to one specific address instead of
+  every interface — the shape you want when a hostname (below) is expected to resolve to
+  exactly this service and nothing else on the box.
+- **`shoal.test` hostname** — point the DNS name at the same address `--host` binds to
+  (e.g. `shoal.test → 127.172.0.4`), so `http://shoal.test/` reaches the service directly
+  with no reverse proxy needed for port 80.
+- **Health check** — poll `GET http://127.172.0.4/api/health`; a 200 with `"phase"` in
+  `idle`/`running`/`stopping` means the process is up (see the payload shape above).
 
 ## Model tiers — premium, subscription, cheap, free
 

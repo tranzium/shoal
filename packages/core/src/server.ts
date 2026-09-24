@@ -227,7 +227,7 @@ export class ShoalServer {
     return addr.port;
   }
 
-  async start(port: number): Promise<void> {
+  async start(port: number, host?: string): Promise<void> {
     this.startedAt = Date.now();
     this.http = createServer(async (req, res) => {
       const url = (req.url ?? "/").split("?")[0];
@@ -414,7 +414,9 @@ export class ShoalServer {
 
     // Large backlog: a flash-sale scene lands ~1000 connections in the same instant, and the
     // OS accept queue (default ~511) would otherwise refuse the overflow with ECONNREFUSED.
-    await new Promise<void>((resolve) => this.http.listen(port, undefined, 2048, resolve));
+    // host undefined = all interfaces (Node's default); pass an explicit address to bind
+    // to one NIC/loopback-alias only, e.g. a Warden service pinned to a specific IP.
+    await new Promise<void>((resolve) => this.http.listen(port, host, 2048, resolve));
   }
 
   private replayEvents(): ShoalEvent[] {

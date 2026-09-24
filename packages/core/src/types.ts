@@ -190,6 +190,8 @@ export interface RunOptions {
   headless: boolean;
   mock: boolean;
   port: number;
+  /** Bind address (default: all interfaces). e.g. a specific LAN/loopback-alias IP for a service. */
+  host?: string;
   /** Auto-open the dashboard in a real browser window on start (default true; --no-open). */
   open?: boolean;
   /**

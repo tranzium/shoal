@@ -55,7 +55,7 @@ export class RunController {
 
   /** `runImmediately: false` (used by `shoal serve`) starts the server and stays in `idle`. */
   async start(runImmediately = true): Promise<void> {
-    await this.server.start(this.opts.port);
+    await this.server.start(this.opts.port, this.opts.host);
     this.server.onControl = (cmd) => this.handle(cmd);
     this.broadcastState();
     if (this.opts.open !== false) openDashboard(`http://localhost:${this.opts.port}`);
@@ -71,7 +71,11 @@ export class RunController {
   }
 
   private broadcastState(): void {
-    this.server.setHealth(this.phase, this.phase === "idle" ? null : this.runNumber);
+    // /api/health reports "idle" once a run finishes — a monitor checking readiness should
+    // see the service is free to accept the next restart, even though the dashboard's own
+    // run_state below still says "finished" so the UI keeps showing the report view.
+    const healthPhase = this.phase === "finished" ? "idle" : this.phase;
+    this.server.setHealth(healthPhase, this.runNumber === 0 ? null : this.runNumber);
     this.server.broadcast({
       type: "run_state",
       phase: this.phase,

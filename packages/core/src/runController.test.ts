@@ -43,16 +43,18 @@ test("restart drives idle -> running -> finished and increments the run id", asy
       server: { port: number };
       handle: (cmd: { cmd: "restart"; swarm?: number }) => Promise<void>;
     };
+    // /api/health reports "idle" once a run finishes (the service is ready for the next
+    // restart), even though runId keeps the last completed run number.
     await controller.handle({ cmd: "restart", swarm: 0 });
     const res1 = await fetch(`http://localhost:${controller.server.port}/api/health`);
     const body1 = await res1.json();
-    expect(body1.phase).toBe("finished");
+    expect(body1.phase).toBe("idle");
     expect(body1.runId).toBe(1);
 
     await controller.handle({ cmd: "restart", swarm: 0 });
     const res2 = await fetch(`http://localhost:${controller.server.port}/api/health`);
     const body2 = await res2.json();
-    expect(body2.phase).toBe("finished");
+    expect(body2.phase).toBe("idle");
     expect(body2.runId).toBe(2);
   } finally {
     await rc.shutdown();
