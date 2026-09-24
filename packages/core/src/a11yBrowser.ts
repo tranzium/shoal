@@ -116,7 +116,7 @@ export class A11yBrowser {
 
   async launch(url: string, headless: boolean): Promise<void> {
     const browser = await sharedBrowser(headless);
-    this.context = await browser.newContext({ viewport: { width: 1024, height: 768 } });
+    this.context = await browser.newContext({ viewport: { width: 1024, height: 768 }, ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1" });
     this.page = await this.context.newPage();
     await this.page.goto(url, { waitUntil: "domcontentloaded" });
   }

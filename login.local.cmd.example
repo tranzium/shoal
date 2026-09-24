@@ -1,0 +1,5 @@
+rem Copy this file to  login.local.cmd  (same folder) and put the throwaway account in it.
+rem tools\run-shoal.cmd picks it up automatically. login.local.cmd is gitignored - it never gets committed.
+rem Avoid % ^ & in the password (cmd.exe eats them).
+set "SHOAL_LOGIN_EMAIL=you@example.com"
+set "SHOAL_LOGIN_PASSWORD=change-me"

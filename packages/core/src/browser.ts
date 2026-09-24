@@ -134,6 +134,7 @@ export class AgentBrowser {
     this.context = await browser.newContext({
       viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
       deviceScaleFactor: 1,
+      ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1",
     });
     this.page = await this.context.newPage();
     await this.page.goto(url, { waitUntil: "domcontentloaded" });
