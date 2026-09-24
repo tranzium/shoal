@@ -159,6 +159,7 @@ victory or ragequit, in character).
 | `--headed` | off | Show the actual browser windows |
 | `--port <n>` | 4321 | Dashboard port |
 | `--host <addr>` | all interfaces | Bind address, e.g. a specific NIC or loopback-alias IP |
+| `--data <dir>` | packaged library | External `strategies.yaml`/`personas.yaml`/`missions/*.yaml` (env: `SHOAL_DATA`). Missing files fall back to the packaged defaults |
 
 Reports land in `./shoal-report.md` + `./shoal-report.json`, findings clustered by
 similarity and ranked by how many agents hit them.
@@ -186,10 +187,14 @@ node packages/core/dist/cli.js serve --port 4340 --no-open \
 | `--headed` | off | Show the real browser windows |
 | `--provider`, `--model`, `--base-url`, `--effort`, `--max-steps`, `--no-verify`, `--personas`, `--task`, `--swarm`, `--concurrency` | as `run` | Starting values for every run the dashboard triggers; model/concurrency default the same way `run` does (Haiku + 3 on `--provider subscription`, Opus + min(swarm, 12) otherwise) |
 | `--allow-domain <d>`, `--yes` | — | Same non-local-target policy as `run`, but checked once at startup and never prompts — refuses to start instead (a service has no terminal) |
+| `--data <dir>` | packaged library | As `run` — and for `serve` specifically, this directory is **watched and reloaded live** (see below) |
 
-Health probe: `GET /api/health` → `{ "phase": "idle"|"running"|"stopping", "runId": n|null, "startedAt": ms, "uptimeMs": ms }`.
+Health probe: `GET /api/health` → `{ "phase": "idle"|"running"|"stopping", "runId": n|null, "startedAt": ms, "uptimeMs": ms, "data": { "strategiesError": string|null, "personasError": string|null, "missionsError": string|null } }`.
 `phase` reports `idle` again once a run finishes (ready for the next restart) even though
 the dashboard itself keeps showing the finished report until you trigger another run.
+The `data` block is only present once a data store is attached (always true under `serve`);
+a non-null error means the *last* edit failed to parse and the previous good copy is still
+what's actually loaded — see "Live data — strategies, personas, missions" below.
 
 ### Task intake — `POST /api/tasks`
 
@@ -221,12 +226,62 @@ WebSocket event, even if an agent narrates it back.
 The queue is **in-memory only**: restarting `shoal serve` drops anything still queued or
 mid-run (finished tasks' reports on disk survive, since those are just files).
 
+A task can also be submitted by mission name instead of spelling out `url`/`task`:
+
+```bash
+curl -X POST http://localhost:4321/api/tasks -d '{"mission": "signup", "url": "https://real-app.test/"}'
+```
+
+`mission` looks up `<dataDir>/missions/<name>.yaml` and uses its fields as defaults; any
+other field in the same request body overrides that mission's value (handy for supplying a
+real `url` or a `login` per submission instead of baking either into the YAML). See
+[`examples/missions/signup.yaml`](examples/missions/signup.yaml) and
+[`paid.yaml`](examples/missions/paid.yaml) — copy either into your data dir's `missions/` to
+try it.
+
 Notes:
 - The report is written to `shoal-report.md` / `.json` in the **working directory**, and each run overwrites the last one.
 - `.env` in the working directory is loaded at startup (API keys, `SHOAL_INSECURE_TLS`).
 - `--provider subscription` reads `~/.claude/.credentials.json`, so run the service as the user who is logged in to Claude Code.
 - Shutdown: Ctrl+C / SIGINT (and SIGBREAK on Windows) stops any running swarm, closes the browsers, and exits 0. An external SIGTERM on Windows is a hard kill regardless of the handler — that's Node's documented platform behavior, not a bug here.
 - The dashboard has no authentication. Anyone who can reach the port can start a swarm on your credentials.
+
+### Live data — strategies, personas, missions
+
+By default shoal reads its strategy and persona libraries from the package
+(`packages/core/strategies/strategies.yaml`, `packages/core/personas/personas.yaml`) and has
+no missions at all. Pass `--data <dir>` (or set `SHOAL_DATA`) to point at your own directory
+instead:
+
+```
+<dataDir>/
+  strategies.yaml   # optional — falls back to the packaged library if absent
+  personas.yaml     # optional — falls back to the packaged library if absent
+  missions/
+    signup.yaml      # { title, url, task, strategy?, swarm?, personas? }
+    paid.yaml
+```
+
+Under `shoal serve`, this directory is **polled every 2 seconds** and reloaded on change —
+edit `strategies.yaml`, save, and `GET /api/strategies` (and the dashboard's strategy
+dropdown) reflect it within a couple of seconds, with **no restart**. A run already in
+flight keeps using whatever it started with; only the *next* run/task sees the new data.
+Reload can also be triggered on demand:
+
+- `POST /api/reload` — re-read now, returns `{ changed, strategies, personas, missions }` counts/errors
+- WS control command `{ "cmd": "reload" }` — same effect, from the dashboard's own socket
+
+If an edit doesn't parse, shoal **keeps serving the last good copy** and records the parse
+error — it's surfaced in `GET /api/health`'s `data` block and in `GET /api/strategies` /
+`GET /api/missions`'s `error` field. It never crashes the service or blanks the dashboard
+over one bad YAML file. For missions specifically, a broken file only affects *that* mission
+(others keep working; a mission that never parsed successfully just doesn't appear).
+
+| Endpoint | What it does |
+|---|---|
+| `GET /api/strategies` | `{ strategies, source, loadedAt, error }` — what's currently loaded |
+| `GET /api/missions` | `{ missions, source, loadedAt, error }` — same, for `missions/*.yaml` |
+| `POST /api/reload` | Re-read the data dir immediately instead of waiting for the next poll |
 
 ### Running under Warden (always-on, no terminal)
 

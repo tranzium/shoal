@@ -6,20 +6,29 @@ import type { Persona } from "./types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export function loadPersonas(): Persona[] {
-  const raw = readFileSync(join(here, "..", "personas", "personas.yaml"), "utf8");
+/** The packaged persona library shipped with shoal — the fallback when no data dir
+ *  (or a data dir with no personas.yaml) is configured. */
+export const PACKAGED_PERSONAS_PATH = join(here, "..", "personas", "personas.yaml");
+
+export function loadPersonas(path: string = PACKAGED_PERSONAS_PATH): Persona[] {
+  const raw = readFileSync(path, "utf8");
   const doc = parse(raw) as { personas: Persona[] };
   return doc.personas;
 }
 
+/** Pick `n` personas from `pool`, cycling through it (and filtering to `ids` when given). */
+export function pickFromList(pool: Persona[], n: number, ids?: string[]): Persona[] {
+  let filtered = pool;
+  if (ids && ids.length > 0) {
+    filtered = pool.filter((p) => ids.includes(p.id));
+    if (filtered.length === 0) throw new Error(`No personas matched: ${ids.join(", ")}`);
+  }
+  return Array.from({ length: n }, (_, i) => filtered[i % filtered.length]);
+}
+
 /** Pick `n` personas, cycling through the library (and filtering to `ids` when given). */
 export function pickPersonas(n: number, ids?: string[]): Persona[] {
-  let pool = loadPersonas();
-  if (ids && ids.length > 0) {
-    pool = pool.filter((p) => ids.includes(p.id));
-    if (pool.length === 0) throw new Error(`No personas matched: ${ids.join(", ")}`);
-  }
-  return Array.from({ length: n }, (_, i) => pool[i % pool.length]);
+  return pickFromList(loadPersonas(), n, ids);
 }
 
 /**

@@ -6,6 +6,7 @@ import { dirname, extname, join, normalize } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import type { ControlCommand, RunPhase, ShoalEvent } from "./types.js";
 import type { TaskQueue } from "./taskQueue.js";
+import type { DataStore } from "./dataStore.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_DIST = join(here, "..", "..", "..", "apps", "dashboard", "dist");
@@ -202,10 +203,17 @@ export class ShoalServer {
   private clusters?: ShoalEvent;
   private done?: ShoalEvent;
   private runState?: ShoalEvent;
+  private dataStatus?: ShoalEvent;
   /** Set by the RunController; lets the dashboard drive the run lifecycle. */
   onControl?: (cmd: ControlCommand) => void;
   /** Set by `shoal serve`; when present, the /api/tasks routes are live. */
   tasks?: TaskQueue;
+  /** Set by the RunController; when present, the /api/strategies, /api/missions, and
+   *  /api/reload routes are live. */
+  dataStore?: DataStore;
+  /** Called after a `POST /api/reload` re-read the data dir, so the owner can re-broadcast
+   *  to connected dashboards when something actually changed. */
+  onDataReload?: (changed: boolean) => void;
   /**
    * The agent the operator is currently watching. Only featured agents and this one
    * stream screenshots, so clicking any fish gets you a live feed without paying to
@@ -240,6 +248,49 @@ export class ShoalServer {
             runId: this.health.runId,
             startedAt: this.startedAt,
             uptimeMs: Date.now() - this.startedAt,
+            ...(this.dataStore ? { data: this.dataStore.health() } : {}),
+          }),
+        );
+        return;
+      }
+      if (url === "/api/strategies" && req.method === "GET") {
+        if (!this.dataStore) {
+          res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "data store not available" }));
+          return;
+        }
+        const s = this.dataStore.getStrategiesSection();
+        res
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ strategies: s.items, source: s.source, loadedAt: s.loadedAt, error: s.error }));
+        return;
+      }
+      if (url === "/api/missions" && req.method === "GET") {
+        if (!this.dataStore) {
+          res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "data store not available" }));
+          return;
+        }
+        const m = this.dataStore.getMissionsSection();
+        res
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify({ missions: m.items, source: m.source, loadedAt: m.loadedAt, error: m.error }));
+        return;
+      }
+      if (url === "/api/reload" && req.method === "POST") {
+        if (!this.dataStore) {
+          res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "data store not available" }));
+          return;
+        }
+        const changed = this.dataStore.reload();
+        this.onDataReload?.(changed);
+        const s = this.dataStore.getStrategiesSection();
+        const p = this.dataStore.getPersonasSection();
+        const m = this.dataStore.getMissionsSection();
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            changed,
+            strategies: { count: s.items.length, source: s.source, loadedAt: s.loadedAt, error: s.error },
+            personas: { count: p.items.length, source: p.source, loadedAt: p.loadedAt, error: p.error },
+            missions: { count: m.items.length, source: m.source, loadedAt: m.loadedAt, error: m.error },
           }),
         );
         return;
@@ -405,7 +456,7 @@ export class ShoalServer {
         try {
           const cmd = JSON.parse(String(raw)) as ControlCommand;
           if (cmd?.cmd === "focus") this.focusedAgentId = cmd.agentId;
-          else if (cmd?.cmd === "stop" || cmd?.cmd === "restart") this.onControl?.(cmd);
+          else if (cmd?.cmd === "stop" || cmd?.cmd === "restart" || cmd?.cmd === "reload") this.onControl?.(cmd);
         } catch {
           /* ignore malformed control frames */
         }
@@ -430,6 +481,7 @@ export class ShoalServer {
       ...(this.cost ? [this.cost] : []),
       ...(this.clusters ? [this.clusters] : []),
       ...(this.done ? [this.done] : []),
+      ...(this.dataStatus ? [this.dataStatus] : []),
     ];
   }
 
@@ -463,6 +515,7 @@ export class ShoalServer {
     else if (event.type === "clusters") this.clusters = event;
     else if (event.type === "run_state") this.runState = event;
     else if (event.type === "run_done") this.done = event;
+    else if (event.type === "data_status") this.dataStatus = event;
     const payload = JSON.stringify(event);
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) client.send(payload);

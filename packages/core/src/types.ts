@@ -41,6 +41,18 @@ export interface AudienceBrief {
   signals: string[];
 }
 
+/** A named, reusable task loaded from `<dataDir>/missions/<name>.yaml`. Lets `POST /api/tasks`
+ *  accept `{ mission: "<name>", ...overrides }` instead of spelling out url/task each time. */
+export interface Mission {
+  name: string;
+  title: string;
+  url: string;
+  task: string;
+  strategy?: string;
+  swarm?: number;
+  personas?: string[];
+}
+
 export type AgentStatus =
   /** Part of the swarm but not yet running — waiting for a concurrency slot. */
   | "queued"
@@ -99,7 +111,9 @@ export type ControlCommand =
   | { cmd: "stop" }
   | { cmd: "restart"; swarm?: number; strategy?: string; task?: string }
   /** Stream this agent's screenshots — set when the operator clicks a fish. */
-  | { cmd: "focus"; agentId: string | null };
+  | { cmd: "focus"; agentId: string | null }
+  /** Re-read strategies.yaml/personas.yaml/missions/*.yaml from the data dir right now. */
+  | { cmd: "reload" };
 
 export type ShoalEvent =
   | { type: "run_config"; task: string; url: string; swarm: number; mock: boolean; provider?: string; scene?: string }
@@ -127,7 +141,16 @@ export type ShoalEvent =
   | { type: "clusters"; clusters: FrictionCluster[]; total: number; ts: number }
   | { type: "run_done"; findings: Finding[]; summary: RunSummary }
   /** The task queue's state — used by the dashboard to show what's running and how much is waiting. */
-  | { type: "task_queue"; runningId: string | null; runningTitle: string | null; queueLength: number };
+  | { type: "task_queue"; runningId: string | null; runningTitle: string | null; queueLength: number }
+  /** Strategies/personas/missions were (re)loaded from the data dir — errors keep the last good copy. */
+  | {
+      type: "data_status";
+      strategiesError: string | null;
+      personasError: string | null;
+      missionsError: string | null;
+      missions: { name: string; title: string }[];
+      loadedAt: number;
+    };
 
 /** One row of the live friction map: a distinct issue and how much of the swarm hit it. */
 export interface FrictionCluster {
@@ -199,4 +222,9 @@ export interface RunOptions {
    * out-of-band (never appended to `task`) and redacted from every report/log/WS event.
    */
   login?: { email: string; password: string };
+  /**
+   * External directory holding strategies.yaml / personas.yaml / missions/*.yaml. Missing
+   * files fall back to the packaged defaults. Default: undefined (packaged paths only).
+   */
+  dataDir?: string;
 }
