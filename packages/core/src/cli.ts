@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { RunController } from "./runController.js";
 import { safeConcurrency } from "./capacity.js";
 import { hasSubscription } from "./subscriptionAuth.js";
@@ -29,6 +30,8 @@ const HELP = `
     shoal demo --race --swarm 5         Race-condition demo: agents strike one item together
     shoal demo --scene marketplace      Multi-user demo: a seller and a buyer, and the bug between them
     shoal run <url> [options]           Unleash a real LLM swarm on a URL
+    shoal serve [--port <n>] [--headed] Start the dashboard as a resident service (idle, no
+                                        swarm) — stays up until SIGINT/SIGTERM
     shoal personas generate [options]   Synthesize a persona panel and print/save it as YAML
     shoal strategies                    List the attack strategies (the second axis)
     shoal scenes                        List multi-user scenes (seller/buyer, doc, chat…)
@@ -85,13 +88,13 @@ const HELP = `
   The live dashboard runs at http://localhost:<port>. Reports land in ./shoal-report.md.
 `;
 
-function arg(name: string, fallback?: string): string | undefined {
+export function arg(name: string, fallback?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 ? process.argv[i + 1] : fallback;
 }
 
 /** Repeatable flag (--allow-domain a --allow-domain b). */
-function args(name: string): string[] {
+export function args(name: string): string[] {
   const out: string[] = [];
   process.argv.forEach((a, i) => {
     if (a === `--${name}` && process.argv[i + 1]) out.push(process.argv[i + 1]);
@@ -182,6 +185,44 @@ async function generatePersonasCmd() {
   }
 }
 
+/** Builds the options `shoal serve` boots with — no URL/swarm yet; a later `restart` control
+ *  command (dashboard, or the task-submission API in a follow-up task) fills those in. */
+export function serveOpts(): RunOptions {
+  return {
+    url: "",
+    task: arg("task", "Buy any product and complete checkout.")!,
+    swarm: Number(arg("swarm", "8")),
+    concurrency: Number(arg("concurrency", "8")),
+    provider: (arg("provider", "anthropic") as RunOptions["provider"]),
+    model: arg("model", "claude-opus-5")!,
+    effort: (arg("effort", "medium") as RunOptions["effort"]),
+    verify: !process.argv.includes("--no-verify"),
+    maxSteps: Number(arg("max-steps", "30")),
+    headless: !process.argv.includes("--headed"),
+    mock: false,
+    port: Number(arg("port", "4321")),
+    open: !process.argv.includes("--no-open"),
+  };
+}
+
+async function serveCmd(): Promise<void> {
+  const opts = serveOpts();
+  const controller = new RunController(opts);
+  await controller.start(false); // stay in `idle` — no swarm until a restart command arrives
+  console.log(`  🐟 shoal serve — dashboard at http://localhost:${opts.port} (idle, waiting for a task)`);
+
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n  ${signal} received — shutting down`);
+    controller.shutdown().then(() => process.exit(0));
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  // No await this.run(): the http/ws server keeps the event loop (and the process) alive.
+}
+
 async function main() {
   const [, , command, maybeUrl] = process.argv;
 
@@ -209,6 +250,10 @@ async function main() {
   if (command === "mcp") {
     startMcpServer();
     return; // stdio server owns the process from here
+  }
+  if (command === "serve") {
+    await serveCmd();
+    return; // resident process — the server keeps it alive until SIGINT/SIGTERM
   }
 
   if (command !== "demo" && command !== "run") {
@@ -311,7 +356,10 @@ async function main() {
   await new RunController(opts).start();
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only run when executed directly (`node dist/cli.js ...`), not when imported by tests.
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
