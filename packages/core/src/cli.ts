@@ -75,6 +75,7 @@ const HELP = `
     --personas <ids>     Comma-separated persona ids            (default: all, cycled)
     --max-steps <n>      Hard cap on actions per agent          (default: 30)
     --port <n>           Dashboard port                         (default: 4321)
+    --host <addr>        Bind address                           (default: all interfaces)
     --headed             Show the real browser windows
     --no-open            Don't auto-open the dashboard in a browser
     --allow-domain <d>   Permit a non-local target (repeatable). Public hosts otherwise
@@ -230,6 +231,7 @@ export function serveOpts(): RunOptions {
     headless: !process.argv.includes("--headed"),
     mock: false,
     port: Number(arg("port", "4321")),
+    host: arg("host"),
     open: !process.argv.includes("--no-open"),
   };
 }
@@ -390,6 +392,7 @@ async function main() {
     headless: !process.argv.includes("--headed"),
     mock,
     port: Number(arg("port", "4321")),
+    host: arg("host"),
     open: !process.argv.includes("--no-open"),
   };
 

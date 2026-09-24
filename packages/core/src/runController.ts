@@ -55,7 +55,7 @@ export class RunController {
 
   /** `runImmediately: false` (used by `shoal serve`) starts the server and stays in `idle`. */
   async start(runImmediately = true): Promise<void> {
-    await this.server.start(this.opts.port);
+    await this.server.start(this.opts.port, this.opts.host);
     this.server.onControl = (cmd) => this.handle(cmd);
     this.broadcastState();
     if (this.opts.open !== false) openDashboard(`http://localhost:${this.opts.port}`);

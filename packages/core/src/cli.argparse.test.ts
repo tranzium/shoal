@@ -41,6 +41,16 @@ test("serveOpts honors --port and --headed", () => {
   expect(opts.headless).toBe(false);
 });
 
+test("serveOpts honors --host; defaults to undefined (all interfaces)", () => {
+  process.argv = ["node", "cli.js", "serve"];
+  expect(serveOpts().host).toBeUndefined();
+
+  process.argv = ["node", "cli.js", "serve", "--host", "127.172.0.4", "--port", "80"];
+  const opts = serveOpts();
+  expect(opts.host).toBe("127.172.0.4");
+  expect(opts.port).toBe(80);
+});
+
 test("serveOpts honors --url, --allow-domain, --base-url and --personas", () => {
   process.argv = [
     "node", "cli.js", "serve",
