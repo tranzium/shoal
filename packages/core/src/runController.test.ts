@@ -1,4 +1,7 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RunController } from "./runController.js";
 import type { RunOptions } from "./types.js";
 
@@ -58,5 +61,44 @@ test("restart drives idle -> running -> finished and increments the run id", asy
     expect(body2.runId).toBe(2);
   } finally {
     await rc.shutdown();
+  }
+});
+
+test("--data threads through: a custom strategies.yaml is what the swarm and /api/strategies see", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shoal-rc-data-"));
+  writeFileSync(join(dir, "strategies.yaml"), "strategies:\n  - id: only-one\n    name: Only One\n    directive: d\n", "utf8");
+  const rc = new RunController({ ...testOpts(), dataDir: dir });
+  await rc.start(false);
+  try {
+    const port = (rc as unknown as { server: { port: number; dataStore: { getStrategies: () => { id: string }[] } } }).server.port;
+    const res = await fetch(`http://localhost:${port}/api/strategies`);
+    const body = await res.json();
+    expect(body.strategies).toEqual([{ id: "only-one", name: "Only One", directive: "d" }]);
+  } finally {
+    await rc.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a WS 'reload' control command re-reads the data dir without touching run phase", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shoal-rc-data-"));
+  const path = join(dir, "strategies.yaml");
+  writeFileSync(path, "strategies:\n  - id: a\n    name: A\n    directive: d\n", "utf8");
+  const rc = new RunController({ ...testOpts(), dataDir: dir });
+  await rc.start(false);
+  try {
+    const controller = rc as unknown as {
+      server: { port: number; dataStore: { getStrategies: () => { id: string }[] } };
+      handle: (cmd: { cmd: "reload" }) => Promise<void>;
+    };
+    writeFileSync(path, "strategies:\n  - id: b\n    name: B\n    directive: d\n", "utf8");
+    await controller.handle({ cmd: "reload" });
+    expect(controller.server.dataStore.getStrategies().map((s) => s.id)).toEqual(["b"]);
+
+    const res = await fetch(`http://localhost:${controller.server.port}/api/health`);
+    expect((await res.json()).phase).toBe("idle"); // reload never touches run phase
+  } finally {
+    await rc.shutdown();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

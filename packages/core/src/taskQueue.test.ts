@@ -1,8 +1,11 @@
 import { test, expect, afterAll } from "bun:test";
 import { rm } from "node:fs/promises";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ShoalServer } from "./server.js";
 import { TaskQueue } from "./taskQueue.js";
+import { DataStore } from "./dataStore.js";
 import type { RunOptions } from "./types.js";
 
 /** swarm: 0 means runSwarm resolves with zero agents — no browser ever launches. */
@@ -32,6 +35,30 @@ async function withServer<T>(fn: (server: ShoalServer, queue: TaskQueue) => Prom
     return await fn(server, queue);
   } finally {
     await server.stop();
+  }
+}
+
+/** Like withServer, but with a DataStore (missions live in a throwaway temp dir) wired up
+ *  so `mission` submissions can resolve. */
+async function withMissionServer<T>(
+  missions: Record<string, string>,
+  fn: (server: ShoalServer, queue: TaskQueue) => Promise<T>,
+): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), "shoal-missions-"));
+  const missionsDir = join(dir, "missions");
+  mkdirSync(missionsDir);
+  for (const [name, yaml] of Object.entries(missions)) {
+    writeFileSync(join(missionsDir, `${name}.yaml`), yaml, "utf8");
+  }
+  const server = new ShoalServer();
+  await server.start(0);
+  server.dataStore = new DataStore(dir);
+  const queue = new TaskQueue(server, baseOpts());
+  try {
+    return await fn(server, queue);
+  } finally {
+    await server.stop();
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
@@ -155,5 +182,50 @@ test("a login is carried out-of-band, not appended to the task text", async () =
     await waitFor(() => queue.get(r.task.id)?.status === "done");
     const report = await queue.getReport(r.task.id);
     expect(report!.md).not.toContain("hunter2-secret");
+  });
+});
+
+test("submit expands a mission into url/task/swarm", async () => {
+  await withMissionServer(
+    { signup: "title: Signup\nurl: https://x.test/\ntask: sign up\nswarm: 3\n" },
+    async (_server, queue) => {
+      const r = queue.submit({ mission: "signup" });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      cleanupIds.push(r.task.id);
+      const t = queue.get(r.task.id)!;
+      expect(t.url).toBe("https://x.test/");
+      expect(t.task).toBe("sign up");
+      expect(t.swarm).toBe(3);
+      expect(t.title).toBe("Signup");
+    },
+  );
+});
+
+test("submit overrides mission defaults with fields also present in the body", async () => {
+  await withMissionServer(
+    { signup: "title: Signup\nurl: https://x.test/\ntask: sign up\nswarm: 3\n" },
+    async (_server, queue) => {
+      const r = queue.submit({ mission: "signup", url: "https://override.test/", swarm: 0 });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      cleanupIds.push(r.task.id);
+      const t = queue.get(r.task.id)!;
+      expect(t.url).toBe("https://override.test/");
+      expect(t.task).toBe("sign up"); // not overridden — inherited from the mission
+      expect(t.swarm).toBe(0);
+    },
+  );
+});
+
+test("submit rejects an unknown mission name", async () => {
+  await withMissionServer({}, async (_server, queue) => {
+    expect(queue.submit({ mission: "does-not-exist" })).toEqual({ ok: false, error: "unknown mission: does-not-exist" });
+  });
+});
+
+test("submit with a mission name but no data store attached is rejected, not a crash", async () => {
+  await withServer(async (_server, queue) => {
+    expect(queue.submit({ mission: "signup" }).ok).toBe(false);
   });
 });
