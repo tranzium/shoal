@@ -27,8 +27,8 @@ export interface TurnProgress {
 }
 
 /**
- * What the agent perceives after an action. Vision agents get an image; accessibility
- * agents get text (the a11y tree / focused-element description). Never both.
+ * What the agent perceives after an action. Vision agents may get both an image and a
+ * compact semantic summary; accessibility agents get text only.
  */
 export interface Observation {
   image?: string; // base64 jpeg
@@ -77,6 +77,25 @@ export const A11Y_TOOL_SCHEMA = {
     count: { type: "integer", description: "How many elements to move past (next/previous only, max 15)" },
   },
   required: ["action"],
+  additionalProperties: false,
+};
+
+/** Semantic controls available to Codex alongside its screenshot-based computer tool. */
+export const BROWSER_TOOL_NAME = "browser";
+export const BROWSER_TOOL_DESCRIPTION =
+  "Act on a named, visible page element from the latest browser snapshot. Prefer this for links, buttons, and form fields; use the computer tool for canvas or visually precise interactions. Element refs expire after each action. Never guess a ref.";
+export const BROWSER_TOOL_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    action: {
+      type: "string",
+      enum: ["click", "fill", "press", "select", "check", "uncheck", "hover"],
+      description: "click activates the element; fill enters text; press sends a key; select chooses an option label; check/uncheck toggles a checkbox; hover reveals hover menus.",
+    },
+    ref: { type: "string", description: "Element reference from the latest browser page snapshot, such as e12" },
+    text: { type: "string", description: "Text for fill, key for press, or visible option label for select" },
+  },
+  required: ["action", "ref"],
   additionalProperties: false,
 };
 

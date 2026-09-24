@@ -367,6 +367,11 @@ Codex child process. Each simulated user keeps a resumable Codex CLI session, so
 swarms to manage your subscription quota. If `--model` is omitted, Codex uses its configured
 default model.
 
+In vision mode, Codex receives a compact summary of visible page text and named controls,
+with fresh element references it can click, fill, select, or press through Playwright. The
+screenshot remains available for visual context and for canvas or other controls that do
+not expose a useful accessible name; coordinate actions are the fallback.
+
 ```bash
 codex login                         # choose ChatGPT sign-in
 npm run shoal -- run https://your-site.example \

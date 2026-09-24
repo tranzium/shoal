@@ -5,6 +5,9 @@ import {
   A11Y_TOOL_DESCRIPTION,
   A11Y_TOOL_NAME,
   A11Y_TOOL_SCHEMA,
+  BROWSER_TOOL_DESCRIPTION,
+  BROWSER_TOOL_NAME,
+  BROWSER_TOOL_SCHEMA,
   FINDING_DESCRIPTION,
   FINDING_SCHEMA,
   RESULT_DESCRIPTION,
@@ -20,7 +23,7 @@ import { CodexSession } from "./codexCli.js";
 import { DISPLAY_HEIGHT, DISPLAY_WIDTH } from "./browser.js";
 import type { RunOptions } from "./types.js";
 
-const TOOL_NAMES = ["computer", A11Y_TOOL_NAME, "report_finding", "task_result", "signal", "await_signal"] as const;
+const TOOL_NAMES = ["computer", BROWSER_TOOL_NAME, A11Y_TOOL_NAME, "report_finding", "task_result", "signal", "await_signal"] as const;
 
 const RESPONSE_SCHEMA = {
   type: "object",
@@ -52,9 +55,11 @@ const COMPUTER_ACTIONS = [
 function toolInstructions(modality: "vision" | "a11y", withScene: boolean): string {
   const perception = modality === "a11y"
     ? `Use the ${A11Y_TOOL_NAME} tool with this input schema: ${JSON.stringify(A11Y_TOOL_SCHEMA)}\n${A11Y_TOOL_DESCRIPTION}`
-    : `Use the computer tool. The viewport is ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}. Valid actions: ${COMPUTER_ACTIONS.join(", ")}. ` +
-      `Input fields: action, coordinate [x,y], start_coordinate [x,y], text, scroll_direction, scroll_amount, duration. ` +
-      `Use screenshot to inspect without acting.`;
+    : [
+        `Use the ${BROWSER_TOOL_NAME} tool with this schema: ${JSON.stringify(BROWSER_TOOL_SCHEMA)}\n${BROWSER_TOOL_DESCRIPTION}`,
+        `Prefer browser actions on the named controls in the latest page snapshot. Refs are fresh for one page state; after an action, use the newly supplied refs. Use the computer tool only when a page element cannot be targeted semantically, such as a canvas or a precise visual gesture.`,
+        `The computer tool viewport is ${DISPLAY_WIDTH}x${DISPLAY_HEIGHT}. Valid actions: ${COMPUTER_ACTIONS.join(", ")}. Input fields: action, coordinate [x,y], start_coordinate [x,y], text, scroll_direction, scroll_amount, duration. Use screenshot to inspect without acting.`,
+      ].join("\n\n");
   return [
     perception,
     `Use report_finding with this schema: ${JSON.stringify(FINDING_SCHEMA)}\n${FINDING_DESCRIPTION}`,
@@ -68,7 +73,7 @@ function toolInstructions(modality: "vision" | "a11y", withScene: boolean): stri
   ].join("\n\n");
 }
 
-function parseResponse(text: string, withScene: boolean): ModelTurn {
+function parseResponse(text: string, withScene: boolean, modality: "vision" | "a11y"): ModelTurn {
   let parsed: {
     thoughts?: unknown;
     toolCalls?: Array<{ name?: unknown; inputJson?: unknown }>;
@@ -79,7 +84,12 @@ function parseResponse(text: string, withScene: boolean): ModelTurn {
   } catch {
     throw new Error(`Codex did not return the required JSON turn: ${text.slice(0, 500)}`);
   }
-  const allowed = new Set<string>(withScene ? TOOL_NAMES : TOOL_NAMES.slice(0, 4));
+  const allowed = new Set<string>([
+    ...(modality === "a11y" ? [A11Y_TOOL_NAME] : ["computer", BROWSER_TOOL_NAME]),
+    "report_finding",
+    "task_result",
+    ...(withScene ? ["signal", "await_signal"] : []),
+  ]);
   const toolCalls = (Array.isArray(parsed.toolCalls) ? parsed.toolCalls : []).map((call) => {
     if (typeof call.name !== "string" || !allowed.has(call.name)) {
       throw new Error(`Codex returned an unsupported Shoal tool: ${String(call.name)}`);
@@ -155,13 +165,17 @@ export class CodexDriver implements AgentDriver {
           "Do not claim the browser performed an action unless a later observation confirms it.",
           "\n# Role and task\n" + this.system,
           "\n# Available Shoal tools\n" + toolInstructions(this.modality, this.withScene),
-          opening.text ? `\n# Initial accessibility observation\n${opening.text}` : "\nThe browser is open. Inspect the attached screenshot and begin.",
+          opening.text
+            ? `\n# ${this.modality === "a11y" ? "Initial accessibility observation" : "Initial page text and named controls"}\n${opening.text}`
+            : "\nThe browser is open. Inspect the attached screenshot and begin.",
         ].join("\n")
       : [
           "Continue the same Shoal user-testing session. Return exactly one JSON object matching the required response schema.",
           "Include one short first-person thought and exactly one Shoal tool call each turn. Never use Codex's shell, file, or other internal tools.",
           "\n# Results from the last browser step\n" + this.pending.map((r) => `Tool call ${r.id}: ${r.text}`).join("\n"),
-          ...(this.currentObservation?.text ? [`\n# Current accessibility observation\n${this.currentObservation.text}`] : []),
+          ...(this.currentObservation?.text
+            ? [`\n# ${this.modality === "a11y" ? "Current accessibility observation" : "Current page text and named controls"}\n${this.currentObservation.text}`]
+            : []),
         ].join("\n");
     const remaining = progress ? progress.maxSteps - progress.step + 1 : Number.POSITIVE_INFINITY;
     const budgetNote = remaining <= 1
@@ -172,7 +186,7 @@ export class CodexDriver implements AgentDriver {
     this.pending = [];
     const model = this.opts.model === "codex" ? undefined : this.opts.model;
     const response = await this.session.next(prompt + budgetNote, RESPONSE_SCHEMA, { model, image });
-    const turn = parseResponse(response.text, this.withScene);
+    const turn = parseResponse(response.text, this.withScene, this.modality);
     turn.usage = response.usage;
     return turn;
   }

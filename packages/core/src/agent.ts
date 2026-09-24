@@ -1,9 +1,9 @@
-import { AgentBrowser, type ComputerAction } from "./browser.js";
+import { AgentBrowser, type ComputerAction, type SemanticBrowserAction } from "./browser.js";
 import { A11yBrowser, type A11yAction } from "./a11yBrowser.js";
 import { AnthropicDriver } from "./anthropicDriver.js";
 import { OpenAIDriver } from "./openaiDriver.js";
 import { CodexDriver } from "./codexDriver.js";
-import { A11Y_TOOL_NAME, type AgentDriver, type Observation } from "./driver.js";
+import { A11Y_TOOL_NAME, BROWSER_TOOL_NAME, type AgentDriver, type Observation } from "./driver.js";
 import type { Barrier } from "./barrier.js";
 import type { ActiveGate } from "./gate.js";
 import type { Rendezvous } from "./rendezvous.js";
@@ -57,6 +57,7 @@ function systemPrompt(
   ctx: AgentContext,
   login?: { email: string; password: string },
   readOnly = false,
+  semanticBrowser = false,
 ): string {
   const strategy = ctx.strategy;
   const role = ctx.sceneRole;
@@ -101,7 +102,9 @@ ${
   a11y
     ? `- You are BLIND to the visual page. You perceive it only through your screen reader: read_screen surveys the accessibility tree, next_element / previous_element move focus, activate presses the focused control. There are no coordinates and no clicking.
 - Report every control with no accessible name, every focus that is invisible or lost, every element you cannot reach by keyboard, and every place the reading order makes no sense. Those are the defects only you can find.`
-    : `- Screenshots are your only eyes. If a click seems to do nothing, take a screenshot to check before assuming.`
+    : semanticBrowser
+      ? `- Use the page text and named controls to understand content and choose browser refs. Use screenshots for visual layout and when controls cannot be targeted by name. After an action, trust the new observation over an assumption.`
+      : `- Screenshots are your only eyes. If a click seems to do nothing, take a screenshot to check before assuming.`
 }`;
 }
 
@@ -149,7 +152,10 @@ export async function runLlmAgent(
     if (a11yBrowser) return { text: await a11yBrowser.describeFocused() };
     const shot = await visionBrowser!.screenshot();
     state.screenshot = shot;
-    return { image: shot };
+    return {
+      image: shot,
+      ...(opts.provider === "codex" ? { text: await visionBrowser!.semanticSnapshot() } : {}),
+    };
   };
 
   // Vision agents freeze their page whenever they're not acting — which is most of the
@@ -186,7 +192,10 @@ export async function runLlmAgent(
     state.status = "browsing";
     push();
 
-    driver.init(systemPrompt(persona, opts.task, ctx, opts.login, opts.readOnly), first);
+    driver.init(
+      systemPrompt(persona, opts.task, ctx, opts.login, opts.readOnly, opts.provider === "codex" && modality === "vision"),
+      first,
+    );
 
     const maxSteps = Math.min(opts.maxSteps, persona.patience_steps + 6);
     let finished = false;
@@ -222,7 +231,7 @@ export async function runLlmAgent(
       }
 
       for (const call of turn.toolCalls) {
-        if (call.name === "computer" || call.name === A11Y_TOOL_NAME) {
+        if (call.name === "computer" || call.name === BROWSER_TOOL_NAME || call.name === A11Y_TOOL_NAME) {
           // Race mode: hold everyone at the last step before the contended action, then
           // release together so the collision is real rather than incidental.
           if (ctx.barrier && !barrierPassed && step >= 1) {
@@ -241,13 +250,24 @@ export async function runLlmAgent(
                 const input = call.input as unknown as A11yAction;
                 state.lastAction = input.action;
                 push();
-                desc = await a11yBrowser.execute(input);
+                desc = call.name === A11Y_TOOL_NAME
+                  ? await a11yBrowser.execute(input)
+                  : `unsupported ${call.name} action for screen-reader modality`;
                 await a11yBrowser.page.waitForTimeout(250);
               } else {
-                const input = call.input as unknown as ComputerAction;
-                state.lastAction = input.action;
-                push();
-                desc = await visionBrowser!.execute(input);
+                if (call.name === BROWSER_TOOL_NAME) {
+                  const input = call.input as unknown as SemanticBrowserAction;
+                  state.lastAction = `${input.action} ${input.ref}`;
+                  push();
+                  desc = await visionBrowser!.executeSemantic(input);
+                } else if (call.name === "computer") {
+                  const input = call.input as unknown as ComputerAction;
+                  state.lastAction = input.action;
+                  push();
+                  desc = await visionBrowser!.execute(input);
+                } else {
+                  desc = `unsupported ${call.name} action for vision modality`;
+                }
                 await visionBrowser!.page.waitForTimeout(400); // let the UI settle
               }
             } catch (err) {
