@@ -125,7 +125,9 @@ export type ShoalEvent =
   | { type: "cost"; usage: TokenUsage; costUsd: number | null; ts: number }
   /** Live friction map — findings clustered and ranked by how many users hit each wall. */
   | { type: "clusters"; clusters: FrictionCluster[]; total: number; ts: number }
-  | { type: "run_done"; findings: Finding[]; summary: RunSummary };
+  | { type: "run_done"; findings: Finding[]; summary: RunSummary }
+  /** The task queue's state — used by the dashboard to show what's running and how much is waiting. */
+  | { type: "task_queue"; runningId: string | null; runningTitle: string | null; queueLength: number };
 
 /** One row of the live friction map: a distinct issue and how much of the swarm hit it. */
 export interface FrictionCluster {
@@ -190,4 +192,9 @@ export interface RunOptions {
   port: number;
   /** Auto-open the dashboard in a real browser window on start (default true; --no-open). */
   open?: boolean;
+  /**
+   * Optional login credentials for the target. Injected into the agent's system prompt
+   * out-of-band (never appended to `task`) and redacted from every report/log/WS event.
+   */
+  login?: { email: string; password: string };
 }

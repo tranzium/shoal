@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize } from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import type { ControlCommand, RunPhase, ShoalEvent } from "./types.js";
+import type { TaskQueue } from "./taskQueue.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_DIST = join(here, "..", "..", "..", "apps", "dashboard", "dist");
@@ -203,6 +204,8 @@ export class ShoalServer {
   private runState?: ShoalEvent;
   /** Set by the RunController; lets the dashboard drive the run lifecycle. */
   onControl?: (cmd: ControlCommand) => void;
+  /** Set by `shoal serve`; when present, the /api/tasks routes are live. */
+  tasks?: TaskQueue;
   /**
    * The agent the operator is currently watching. Only featured agents and this one
    * stream screenshots, so clicking any fish gets you a live feed without paying to
@@ -239,6 +242,76 @@ export class ShoalServer {
             uptimeMs: Date.now() - this.startedAt,
           }),
         );
+        return;
+      }
+      if (url === "/api/tasks" || url.startsWith("/api/tasks/")) {
+        if (!this.tasks) {
+          res
+            .writeHead(404, { "Content-Type": "application/json" })
+            .end(JSON.stringify({ error: "task queue not available — run `shoal serve`" }));
+          return;
+        }
+        const parts = url.split("/").filter(Boolean); // ["api","tasks", id?, sub?]
+        const id = parts[2];
+        const sub = parts[3];
+        const json = (code: number, body: unknown) =>
+          res.writeHead(code, { "Content-Type": "application/json" }).end(JSON.stringify(body));
+
+        if (!id && req.method === "POST") {
+          const chunks: Buffer[] = [];
+          for await (const c of req) chunks.push(c as Buffer);
+          let body: Record<string, unknown>;
+          try {
+            body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+          } catch {
+            json(400, { error: "invalid JSON body" });
+            return;
+          }
+          const result = this.tasks.submit(body);
+          if (!result.ok) {
+            json(400, { error: result.error });
+            return;
+          }
+          json(201, { id: result.task.id, position: result.task.position });
+          return;
+        }
+        if (!id && req.method === "GET") {
+          json(200, this.tasks.list());
+          return;
+        }
+        if (id && !sub && req.method === "GET") {
+          const task = this.tasks.get(id);
+          if (!task) {
+            json(404, { error: `unknown task: ${id}` });
+            return;
+          }
+          json(200, task);
+          return;
+        }
+        if (id && sub === "report" && req.method === "GET") {
+          const report = await this.tasks.getReport(id);
+          if (!report) {
+            json(404, { error: `no report available for ${id}` });
+            return;
+          }
+          const format = new URL(req.url ?? "/", "http://x").searchParams.get("format");
+          if (format === "json") {
+            json(200, report.json);
+          } else {
+            res.writeHead(200, { "Content-Type": "text/markdown" }).end(report.md);
+          }
+          return;
+        }
+        if (id && !sub && req.method === "DELETE") {
+          const ok = this.tasks.cancel(id);
+          if (!ok) {
+            json(404, { error: `unknown task: ${id}` });
+            return;
+          }
+          json(200, { cancelled: true });
+          return;
+        }
+        json(404, { error: "not found" });
         return;
       }
       if (url === "/api/claim") {

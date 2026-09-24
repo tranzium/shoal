@@ -162,6 +162,41 @@ victory or ragequit, in character).
 Reports land in `./shoal-report.md` + `./shoal-report.json`, findings clustered by
 similarity and ranked by how many agents hit them.
 
+## Resident service — `shoal serve` + task intake
+
+```bash
+npm run shoal -- serve --port 4321
+```
+
+Starts the dashboard as a long-running process that stays up between runs — idle with no
+swarm until work arrives, instead of exiting when a run finishes. Feed it tasks over HTTP:
+
+```bash
+curl -X POST http://localhost:4321/api/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"url": "http://localhost:3000", "task": "Reproduce the checkout error", "swarm": 5}'
+# -> {"id": "t1a2b3c", "position": 0}
+```
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/tasks` | Queue a task — body `{ url, task, swarm?=1, strategy?, personas?, title?, login? }`. Returns `201 { id, position }`; `400` if `url`/`task` are missing or invalid |
+| `GET /api/tasks` | `{ queue, history }` — what's running/queued, and the last 50 finished |
+| `GET /api/tasks/:id` | Status (`queued`/`running`/`done`/`failed`/`cancelled`), timings, outcome |
+| `GET /api/tasks/:id/report` | The task's report as markdown; add `?format=json` for the JSON form |
+| `DELETE /api/tasks/:id` | Cancels a queued task, or aborts one already running |
+
+Tasks run **one at a time, FIFO** — the server returns to idle between them. Each task gets
+its own `reports/<id>.md` + `reports/<id>.json` (gitignored), so nothing gets overwritten by
+the next task the way `shoal run`'s shared `shoal-report.md` would be.
+
+An optional `login: { email, password }` is handed to the agent out-of-band — appended to
+its system prompt, never to the task text — and redacted from every report, log line, and
+WebSocket event, even if an agent narrates it back.
+
+The queue is **in-memory only**: restarting `shoal serve` drops anything still queued or
+mid-run (finished tasks' reports on disk survive, since those are just files).
+
 ## Model tiers — premium, subscription, cheap, free
 
 Agents see pixels, so any **vision + tool-calling** model can drive one. Three providers:

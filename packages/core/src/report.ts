@@ -1,6 +1,7 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { comparisonRows } from "./pricing.js";
+import { redactFinding, redactText } from "./redact.js";
 import type { Finding, FrictionCluster, RunOptions, RunSummary } from "./types.js";
 
 /** Group near-duplicate findings (same trap hit by several agents) by normalized title words. */
@@ -76,17 +77,42 @@ function costLines(summary: RunSummary, opts: RunOptions): string[] {
   return lines;
 }
 
-export async function writeReport(findings: Finding[], summary: RunSummary, opts: RunOptions): Promise<string> {
+/** Header fields for a per-task report (`reports/<id>.md`); omitted for the shared `run`-mode report. */
+interface ReportMeta {
+  id: string;
+  title: string;
+  startedAt: number;
+  finishedAt: number;
+}
+
+function buildReportMd(findings: Finding[], summary: RunSummary, opts: RunOptions, meta?: ReportMeta): string {
   const clusters = clusterFindings(findings);
   const sevIcon = { high: "🔴", medium: "🟡", low: "🔵" } as const;
 
-  const md = [
-    `# 🐟 Shoal swarm report`,
-    ``,
-    `- **Target:** ${opts.url}`,
-    `- **Task:** ${opts.task}`,
-    `- **Swarm:** ${summary.total} agents (${opts.mock ? "mock mode" : opts.model})`,
-    `- **Outcome:** ${summary.completed} completed · ${summary.gaveUp} gave up · ${summary.errored} errored`,
+  const header = meta
+    ? [
+        `# 🐟 Shoal task report — ${meta.title}`,
+        ``,
+        `- **Id:** ${meta.id}`,
+        `- **Target:** ${opts.url}`,
+        `- **Task:** ${opts.task}`,
+        `- **Strategy:** ${opts.strategyIds?.join(", ") || "default"}`,
+        `- **Swarm:** ${summary.total} agents (${opts.mock ? "mock mode" : opts.model})`,
+        `- **Started:** ${new Date(meta.startedAt).toISOString()}`,
+        `- **Finished:** ${new Date(meta.finishedAt).toISOString()}`,
+        `- **Outcome:** ${summary.completed} completed · ${summary.gaveUp} gave up · ${summary.errored} errored`,
+      ]
+    : [
+        `# 🐟 Shoal swarm report`,
+        ``,
+        `- **Target:** ${opts.url}`,
+        `- **Task:** ${opts.task}`,
+        `- **Swarm:** ${summary.total} agents (${opts.mock ? "mock mode" : opts.model})`,
+        `- **Outcome:** ${summary.completed} completed · ${summary.gaveUp} gave up · ${summary.errored} errored`,
+      ];
+
+  return [
+    ...header,
     ...costLines(summary, opts),
     ``,
     `## Findings (${clusters.length} issues, ${findings.length} reports${
@@ -112,10 +138,57 @@ export async function writeReport(findings: Finding[], summary: RunSummary, opts
       ];
     }),
   ].join("\n");
+}
 
+export async function writeReport(findings: Finding[], summary: RunSummary, opts: RunOptions): Promise<string> {
+  const md = buildReportMd(findings, summary, opts);
   const mdPath = join(process.cwd(), "shoal-report.md");
   const jsonPath = join(process.cwd(), "shoal-report.json");
   await writeFile(mdPath, md, "utf8");
-  await writeFile(jsonPath, JSON.stringify({ summary, clusters, findings }, null, 2), "utf8");
+  await writeFile(jsonPath, JSON.stringify({ summary, clusters: clusterFindings(findings), findings }, null, 2), "utf8");
   return mdPath;
+}
+
+/**
+ * Per-task report for the queue (`reports/<id>.md` + `.json`) — unlike `writeReport`, each
+ * task gets its own file instead of overwriting a shared `shoal-report.*`. `secrets`, when
+ * given, redacts login credentials from the task text and every finding before writing —
+ * a backstop on top of the redaction already applied as findings are collected.
+ */
+export async function writeTaskReport(
+  findings: Finding[],
+  summary: RunSummary,
+  opts: RunOptions,
+  meta: { id: string; title: string; startedAt: number; finishedAt?: number },
+  secrets: string[] = [],
+): Promise<{ mdPath: string; jsonPath: string }> {
+  const finishedAt = meta.finishedAt ?? Date.now();
+  const safeFindings = secrets.length ? findings.map((f) => redactFinding(f, secrets)) : findings;
+  const safeOpts: RunOptions = secrets.length ? { ...opts, task: redactText(opts.task, secrets) } : opts;
+  const safeTitle = secrets.length ? redactText(meta.title, secrets) : meta.title;
+
+  const md = buildReportMd(safeFindings, summary, safeOpts, { id: meta.id, title: safeTitle, startedAt: meta.startedAt, finishedAt });
+  const dir = join(process.cwd(), "reports");
+  await mkdir(dir, { recursive: true });
+  const mdPath = join(dir, `${meta.id}.md`);
+  const jsonPath = join(dir, `${meta.id}.json`);
+  await writeFile(mdPath, md, "utf8");
+  await writeFile(
+    jsonPath,
+    JSON.stringify(
+      {
+        id: meta.id,
+        title: safeTitle,
+        startedAt: meta.startedAt,
+        finishedAt,
+        summary,
+        clusters: clusterFindings(safeFindings),
+        findings: safeFindings,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  return { mdPath, jsonPath };
 }

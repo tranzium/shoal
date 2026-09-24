@@ -6,6 +6,7 @@ import { assignStrategies, getStrategy } from "./strategies.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas } from "./personaGen.js";
 import { ShoalServer } from "./server.js";
 import { writeReport, frictionMap } from "./report.js";
+import { redactFinding, redactText } from "./redact.js";
 import { verifyFindings } from "./verify.js";
 import { closeSharedBrowser, configureBrowserPool } from "./browser.js";
 import { closeSharedA11yBrowser } from "./a11yBrowser.js";
@@ -33,6 +34,11 @@ export interface RunHooks {
   server?: ShoalServer;
   /** Aborted by an operator stop/restart. */
   signal?: AbortSignal;
+  /**
+   * Overrides the default `writeReport` (which overwrites the shared `shoal-report.*`).
+   * The task queue uses this to write per-task reports instead.
+   */
+  writeReport?: (findings: Finding[], summary: RunSummary, opts: RunOptions) => Promise<string>;
 }
 
 function readSubTypeSafe(): string {
@@ -74,6 +80,9 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
   else server.race.reset(); // fresh contended resource for each run
 
   const dashboardUrl = `http://localhost:${opts.port}`;
+  // Credentials ride out-of-band on opts.login (never in opts.task) — this is the backstop
+  // that strips them from logs/WS events/findings if an agent narrates them back anyway.
+  const secrets = opts.login ? [opts.login.email, opts.login.password].filter(Boolean) : [];
   // Race mode converges everyone on the contended page.
   const racePath = opts.race ? (opts.race.path ?? "/shop/race.html") : null;
   const targetUrl = opts.mock
@@ -269,16 +278,20 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
         // JPEGs down the socket.
         const watched = server.focusedAgentId === agentId;
         if (bigSwarm && !featuredSet.has(index) && !watched) delete state.screenshot;
-        server.broadcast({ type: "agent_state", state, ts: Date.now() });
+        const safeState = secrets.length
+          ? { ...state, lastThought: redactText(state.lastThought, secrets), lastAction: redactText(state.lastAction, secrets) }
+          : state;
+        server.broadcast({ type: "agent_state", state: safeState, ts: Date.now() });
       },
       onThought: (text) => {
-        log(`  ${persona.emoji} ${persona.name}: ${text}`);
-        server.broadcast({ type: "thought", agentId, personaName: persona.name, emoji: persona.emoji, text, ts: Date.now() });
+        const safeText = redactText(text, secrets);
+        log(`  ${persona.emoji} ${persona.name}: ${safeText}`);
+        server.broadcast({ type: "thought", agentId, personaName: persona.name, emoji: persona.emoji, text: safeText, ts: Date.now() });
       },
       onFinding: (f) => {
-        const finding: Finding = { ...f, agentId, personaName: persona.name, ts: Date.now() };
+        const finding: Finding = redactFinding({ ...f, agentId, personaName: persona.name, ts: Date.now() }, secrets);
         findings.push(finding);
-        log(`  🚩 [${f.severity}] ${f.title} — ${persona.name}`);
+        log(`  🚩 [${f.severity}] ${finding.title} — ${persona.name}`);
         hooks.onFinding?.(finding);
         // The evidence screenshot stays server-side for the verify pass; don't ship it to every dashboard client.
         const { evidence, ...wire } = finding;
@@ -455,7 +468,7 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
 
   broadcastClusters(true); // final map, including oracle findings and any post-verify changes
   server.broadcast({ type: "run_done", findings, summary });
-  const reportPath = await writeReport(findings, summary, { ...opts, url: targetUrl });
+  const reportPath = await (hooks.writeReport ?? writeReport)(findings, summary, { ...opts, url: targetUrl });
 
   log(`\n  ── swarm finished in ${(summary.durationMs / 1000).toFixed(0)}s ──`);
   log(`  ✓ ${summary.completed} completed · ✗ ${summary.gaveUp} gave up · ⚠ ${summary.errored} errored`);

@@ -2,6 +2,7 @@
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { RunController } from "./runController.js";
+import { TaskQueue } from "./taskQueue.js";
 import { safeConcurrency } from "./capacity.js";
 import { hasSubscription } from "./subscriptionAuth.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas, personasToYaml } from "./personaGen.js";
@@ -209,7 +210,11 @@ async function serveCmd(): Promise<void> {
   const opts = serveOpts();
   const controller = new RunController(opts);
   await controller.start(false); // stay in `idle` — no swarm until a restart command arrives
+  // One task at a time, FIFO: POST /api/tasks queues work, the queue runs it and returns
+  // to idle before starting the next. Queue is in-memory — a restart drops anything queued.
+  controller.shoalServer.tasks = new TaskQueue(controller.shoalServer, opts);
   console.log(`  🐟 shoal serve — dashboard at http://localhost:${opts.port} (idle, waiting for a task)`);
+  console.log(`  📬 POST http://localhost:${opts.port}/api/tasks to submit one`);
 
   let shuttingDown = false;
   const shutdown = (signal: string) => {
