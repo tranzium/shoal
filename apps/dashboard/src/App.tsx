@@ -11,6 +11,13 @@ interface AgentState {
   lastThought: string;
   lastAction: string;
   screenshot?: string;
+  result?: {
+    outcome: "completed" | "gave_up";
+    reason: string;
+    purchaseIntent?: "yes" | "maybe" | "no" | "not_applicable";
+    chosenOffer?: string;
+    recommendation?: string;
+  };
 }
 
 interface Finding {
@@ -366,6 +373,13 @@ export function App() {
                   {selected.strategyName ? ` · ${selected.strategyName}` : ""}
                   {selected.modality === "a11y" ? " · screen reader" : ""}
                 </div>
+                {selected.result?.purchaseIntent && selected.result.purchaseIntent !== "not_applicable" && (
+                  <div className="dd-meta">
+                    Buy intent: {selected.result.purchaseIntent}
+                    {selected.result.chosenOffer ? ` · Offer: ${selected.result.chosenOffer}` : ""}
+                    {selected.result.recommendation ? ` · Suggestion: ${selected.result.recommendation}` : ""}
+                  </div>
+                )}
               </div>
             )}
           </main>

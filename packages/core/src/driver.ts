@@ -21,6 +21,11 @@ export interface ModelTurn {
   usage?: import("./types.js").TokenUsage;
 }
 
+export interface TurnProgress {
+  step: number;
+  maxSteps: number;
+}
+
 /**
  * What the agent perceives after an action. Vision agents get an image; accessibility
  * agents get text (the a11y tree / focused-element description). Never both.
@@ -33,8 +38,9 @@ export interface Observation {
 export interface AgentDriver {
   init(system: string, first: Observation): void;
   /** Sends pending tool results (if any) and gets the model's next turn. */
-  next(): Promise<ModelTurn>;
+  next(progress?: TurnProgress): Promise<ModelTurn>;
   addToolResult(id: string, text: string, obs?: Observation): void;
+  close?(): Promise<void>;
 }
 
 /**
@@ -103,13 +109,21 @@ export const RESULT_SCHEMA = {
   properties: {
     outcome: { type: "string", enum: ["completed", "gave_up"] },
     reason: { type: "string", description: "One or two sentences on why, in character" },
+    purchaseIntent: {
+      type: "string",
+      enum: ["yes", "maybe", "no", "not_applicable"],
+      description: "Would you personally buy this offering at the price shown? Use not_applicable if the task is unrelated to a purchase.",
+    },
+    chosenOffer: { type: "string", description: "The package or offering you would choose, or an empty string if none" },
+    recommendation: { type: "string", description: "One concrete change that would make this offering more compelling" },
   },
-  required: ["outcome", "reason"],
+  required: ["outcome", "reason", "purchaseIntent", "chosenOffer", "recommendation"],
   additionalProperties: false,
 };
 
 export const RESULT_DESCRIPTION =
-  "Call exactly once, when you have either completed the task or decided to give up. Ends your session.";
+  "Call exactly once, when you have either completed the task or decided to give up. Ends your session. " +
+  "When asked to evaluate an offer, fill purchaseIntent, chosenOffer, and recommendation. For other tasks use purchaseIntent not_applicable and empty strings for the other two fields.";
 
 /** Multi-user coordination tools (only offered when the agent has a scene role). */
 export const SIGNAL_SCHEMA = {

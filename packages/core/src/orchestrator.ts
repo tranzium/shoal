@@ -7,7 +7,8 @@ import { ShoalServer } from "./server.js";
 import { DataStore } from "./dataStore.js";
 import { writeReport, frictionMap } from "./report.js";
 import { redactFinding, redactText } from "./redact.js";
-import { verifyFindings } from "./verify.js";
+import { verifyFindings, verifyFindingsWithCodex } from "./verify.js";
+import { ensureCodexChatGptLogin } from "./codexCli.js";
 import { closeSharedBrowser, configureBrowserPool } from "./browser.js";
 import { closeSharedA11yBrowser } from "./a11yBrowser.js";
 import { Barrier } from "./barrier.js";
@@ -38,7 +39,7 @@ export interface RunHooks {
    * Overrides the default `writeReport` (which overwrites the shared `shoal-report.*`).
    * The task queue uses this to write per-task reports instead.
    */
-  writeReport?: (findings: Finding[], summary: RunSummary, opts: RunOptions) => Promise<string>;
+  writeReport?: (findings: Finding[], summary: RunSummary, opts: RunOptions, agents?: AgentState[]) => Promise<string>;
 }
 
 function readSubTypeSafe(): string {
@@ -74,6 +75,7 @@ async function pool<R>(
 }
 
 export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<RunSummary> {
+  if (opts.provider === "codex") await ensureCodexChatGptLogin();
   const log = hooks.quiet ? () => {} : console.log;
   const server = hooks.server ?? new ShoalServer();
   if (!hooks.server) await server.start(opts.port);
@@ -250,9 +252,8 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     return opts.mock ? `${dashboardUrl}${path}` : new URL(path, opts.url).toString();
   };
 
-  // Live cost meter. On the subscription the marginal cost is $0 (flat fee), so we
-  // report $0 but still track token volume and what it *would* cost on the metered API.
-  const isSub = opts.provider === "subscription";
+  // Subscription-backed providers have no per-token charge here; still track reported tokens.
+  const isSub = opts.provider === "subscription" || opts.provider === "codex";
   const price = priceFor(opts.model, opts.price);
   let usage: TokenUsage = { ...ZERO_USAGE };
   let lastCostBroadcast = 0;
@@ -426,10 +427,24 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
 
   // Verify pass: one strong model reviews the swarm's findings against their evidence.
   // (Its own tokens are counted into the run cost — the editor isn't free either.)
-  // Uses env Anthropic creds when present; otherwise the subscription token on a
-  // sub-reachable model. Delegating verify to an MCP orchestrator is the future path.
+  // Non-Codex providers use Anthropic credentials here; the Codex branch above stays inside
+  // the ChatGPT-authenticated Codex CLI.
   // Skipped on a stopped run — the operator wants out now, not after a model call.
-  if (opts.verify && !opts.mock && !stopped && findings.length > 0) {
+  if (opts.verify && !opts.mock && !stopped && findings.length > 0 && opts.provider === "codex") {
+    log(`\n  🔎 verify pass: reviewing ${findings.length} findings with Codex CLI…`);
+    try {
+      const verifyUsage = await verifyFindingsWithCodex(
+        findings.filter((f) => !f.verdict),
+        opts.task,
+        opts.model === "codex" ? undefined : opts.model,
+      );
+      if (verifyUsage) trackUsage(verifyUsage, true);
+      const suspect = findings.filter((f) => f.verdict?.status === "suspect").length;
+      log(`  🔎 ${findings.length - suspect} confirmed · ${suspect} flagged as possible agent artifacts`);
+    } catch (err) {
+      console.warn(`  🔎 Codex verify pass failed (report will be unverified): ${(err as Error).message}`);
+    }
+  } else if (opts.verify && !opts.mock && !stopped && findings.length > 0) {
     const envAnthropic = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
     let verifyAuth: { authToken?: string; model?: string } | null = null;
     if (envAnthropic) verifyAuth = {}; // default: env creds, claude-opus-5
@@ -472,7 +487,7 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
 
   broadcastClusters(true); // final map, including oracle findings and any post-verify changes
   server.broadcast({ type: "run_done", findings, summary });
-  const reportPath = await (hooks.writeReport ?? writeReport)(findings, summary, { ...opts, url: targetUrl });
+  const reportPath = await (hooks.writeReport ?? writeReport)(findings, summary, { ...opts, url: targetUrl }, states);
 
   log(`\n  ── swarm finished in ${(summary.durationMs / 1000).toFixed(0)}s ──`);
   log(`  ✓ ${summary.completed} completed · ✗ ${summary.gaveUp} gave up · ⚠ ${summary.errored} errored`);
@@ -480,14 +495,15 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
   if (opts.mock) {
     log(`  💰 cost: $0.00 (mock mode)`);
   } else if (isSub) {
-    const apiEquiv = price ? ` · ~$${costUsd(usage, price).toFixed(2)} if it were the metered API` : "";
-    log(`  💰 cost: $0.00 (Claude ${readSubTypeSafe()} subscription — flat fee) · ${(totalTok / 1000).toFixed(0)}k tokens${apiEquiv}`);
+    const subscription = opts.provider === "codex" ? "ChatGPT subscription via Codex CLI" : `Claude ${readSubTypeSafe()} subscription`;
+    log(`  💰 cost: $0.00 (${subscription}) · ${(totalTok / 1000).toFixed(0)}k reported tokens`);
   } else if (summary.costUsd !== null) {
     log(`  💰 cost: $${summary.costUsd.toFixed(2)} (${((usage.input + usage.cacheRead + usage.cacheWrite) / 1000).toFixed(0)}k in / ${(usage.output / 1000).toFixed(0)}k out)`);
   } else {
     log(`  💰 tokens: ${(totalTok / 1000).toFixed(0)}k (no price known for ${opts.model} — set --price-in/--price-out)`);
   }
   log(`  🚩 ${findings.length} findings → ${reportPath}`);
+  if (!hooks.writeReport) log(`  📄 HTML report → ${reportPath.replace(/\.md$/, ".html")}`);
 
   hooks.onDone?.({ findings, summary, reportPath });
 

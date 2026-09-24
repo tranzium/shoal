@@ -79,6 +79,16 @@ export interface Finding {
   verdict?: { status: "confirmed" | "suspect"; note: string };
 }
 
+/** A simulated user's conclusion, saved separately from transient dashboard narration. */
+export interface AgentResult {
+  outcome: "completed" | "gave_up";
+  reason: string;
+  /** Optional buyer signals, useful when the task asks the user to evaluate an offer. */
+  purchaseIntent?: "yes" | "maybe" | "no" | "not_applicable";
+  chosenOffer?: string;
+  recommendation?: string;
+}
+
 export interface AgentState {
   agentId: string;
   personaId: string;
@@ -94,6 +104,7 @@ export interface AgentState {
   strategyName?: string;
   /** "vision" (screenshots) or "a11y" (accessibility tree — screen-reader users). */
   modality?: "vision" | "a11y";
+  result?: AgentResult;
 }
 
 export interface TokenUsage {
@@ -183,8 +194,8 @@ export interface RunOptions {
   concurrency: number;
   /** Operator passed --concurrency explicitly: a dashboard restart must not overwrite it. */
   concurrencyPinned?: boolean;
-  // "subscription" drives the swarm on the developer's Claude Code Pro/Max token.
-  provider: "anthropic" | "openai" | "subscription";
+  // "subscription" uses Claude Code credentials; "codex" uses the ChatGPT-authenticated Codex CLI.
+  provider: "anthropic" | "openai" | "subscription" | "codex";
   /** OpenAI-compatible endpoint base URL (OpenRouter, DashScope, Zhipu, Ollama, …). */
   baseUrl?: string;
   model: string;
@@ -227,4 +238,6 @@ export interface RunOptions {
    * files fall back to the packaged defaults. Default: undefined (packaged paths only).
    */
   dataDir?: string;
+  /** Permit read-only browsing: links only, no typing, form controls, or submit keys. */
+  readOnly?: boolean;
 }

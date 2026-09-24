@@ -112,11 +112,20 @@ const LIST_LANDMARKS = `() => {
 
 export class A11yBrowser {
   private context!: BrowserContext;
+  private readOnly = false;
   page!: Page;
 
-  async launch(url: string, headless: boolean): Promise<void> {
+  async launch(url: string, headless: boolean, readOnly = false): Promise<void> {
+    this.readOnly = readOnly;
     const browser = await sharedBrowser(headless);
     this.context = await browser.newContext({ viewport: { width: 1024, height: 768 }, ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1" });
+    if (readOnly) {
+      await this.context.route("**/*", async (route) => {
+        const method = route.request().method().toUpperCase();
+        if (["GET", "HEAD", "OPTIONS"].includes(method)) await route.continue();
+        else await route.abort("blockedbyclient");
+      });
+    }
     this.page = await this.context.newPage();
     await this.page.goto(url, { waitUntil: "domcontentloaded" });
   }
@@ -159,6 +168,9 @@ export class A11yBrowser {
   /** Executes one screen-reader action; returns what the user would perceive. */
   async execute(input: A11yAction): Promise<string> {
     const { page } = this;
+    if (this.readOnly && (input.action === "activate" || input.action === "type")) {
+      return `Blocked by read-only mode: ${input.action} is disabled`;
+    }
     switch (input.action) {
       case "read_screen":
         return `Accessibility tree:\n${await this.snapshot()}`;

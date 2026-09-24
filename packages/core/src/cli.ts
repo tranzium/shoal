@@ -5,6 +5,7 @@ import { RunController } from "./runController.js";
 import { TaskQueue } from "./taskQueue.js";
 import { safeConcurrency } from "./capacity.js";
 import { hasSubscription } from "./subscriptionAuth.js";
+import { ensureCodexChatGptLogin } from "./codexCli.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas, personasToYaml } from "./personaGen.js";
 import { DataStore } from "./dataStore.js";
 import { listScenes, sceneScales } from "./scenes.js";
@@ -64,8 +65,8 @@ const HELP = `
     --task "<text>"      What the swarm should try to do        (default: "Buy any product and complete checkout")
     --swarm <n>          Number of agents                       (default: 8)
     --concurrency <n>    Agents running at once; rest queue     (default: min(swarm, 12))
-    --provider <p>       anthropic | openai | subscription      (default: anthropic)
-    --model <id>         Model id for the chosen provider       (default: claude-opus-5)
+    --provider <p>       anthropic | openai | subscription | codex (default: anthropic)
+    --model <id>         Model id for the chosen provider       (default depends on provider)
     --base-url <url>     OpenAI-compatible endpoint             (default: https://openrouter.ai/api/v1)
                          e.g. Ollama http://localhost:11434/v1, DashScope, Zhipu, vLLM
     --effort <level>     low|medium|high|xhigh|max (anthropic)  (default: medium)
@@ -77,6 +78,7 @@ const HELP = `
     --port <n>           Dashboard port                         (default: 4321)
     --host <addr>        Bind address                           (default: all interfaces)
     --headed             Show the real browser windows
+    --read-only          Browse links only; block typing, form actions, and transaction links
     --no-open            Don't auto-open the dashboard in a browser
     --allow-domain <d>   Permit a non-local target (repeatable). Public hosts otherwise
                          require interactive confirmation — you are pointing a swarm at them.
@@ -90,11 +92,12 @@ const HELP = `
     anthropic            ANTHROPIC_API_KEY (or \`ant auth login\`) — native computer use, metered
     subscription         Your Claude Code Pro/Max login — no API key, flat fee. Runs the swarm
                          on your subscription (small swarms; shares your Claude Code rate pool).
+    codex                Your ChatGPT sign-in in Codex CLI — no API key; uses Codex's configured model.
     openai               OPENAI_API_KEY (or SHOAL_OPENAI_API_KEY) — any vision+tools model
                          behind an OpenAI-compatible endpoint (Qwen-VL, GLM-V, OpenRouter, Ollama)
                          The verify pass still uses Anthropic credentials when available.
 
-  The live dashboard runs at http://localhost:<port>. Reports land in ./shoal-report.md.
+  The live dashboard runs at http://localhost:<port>. Reports land in ./shoal-report.md, .json, and .html.
 `;
 
 export function arg(name: string, fallback?: string): string | undefined {
@@ -333,7 +336,7 @@ async function main() {
   if (!mock) {
     if (provider === "anthropic" && !hasAnthropic) {
       console.error("  No ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN / ant profile) found.");
-      console.error("  On a Claude Pro/Max plan? Run on your subscription: --provider subscription");
+      console.error("  Claude Pro/Max: --provider subscription. ChatGPT subscription via Codex CLI: --provider codex.");
       console.error("  Or try the zero-cost demo first: shoal demo");
       process.exit(1);
     }
@@ -347,31 +350,39 @@ async function main() {
       console.error("  Run any Claude Code command first, or use --provider anthropic with an API key.");
       process.exit(1);
     }
+    if (provider === "codex") {
+      try {
+        await ensureCodexChatGptLogin();
+      } catch (err) {
+        console.error(`  ${(err as Error).message}`);
+        process.exit(1);
+      }
+    }
   }
 
   const swarm = Number(arg("swarm", "8"));
-  // Subscription mode's binding constraint is the shared Claude Code RATE POOL, not cost
-  // (it's flat-fee, so model choice is free). We default to Haiku because it's the lightest
-  // load on that pool — the most agent-steps before you throttle your own Claude Code — not
-  // because it's cheap. Upgrade grounding with --model claude-sonnet-4-6 at the cost of
-  // draining the pool faster. Testing showed one small run can rate-limit the whole sub.
-  const isSub = provider === "subscription";
+  // Claude subscription mode shares Claude Code's rate pool, so its default stays small.
+  const isSub = provider === "subscription" || provider === "codex";
   const defaultModel =
-    provider === "openai" ? "qwen/qwen3-vl-plus" : isSub ? "claude-haiku-4-5" : "claude-opus-5";
+    provider === "codex" ? "codex" : provider === "openai" ? "qwen/qwen3-vl-plus" : isSub ? "claude-haiku-4-5" : "claude-opus-5";
   // Mock swarms are bound by the machine (resident browsers, freeze-tiered), not by an
   // API rate pool — so let them fill the measured capacity. LLM runs stay conservative:
   // the provider's rate limits bind long before RAM does.
   const defaultConcurrency = mock
     ? Math.min(swarm, safeConcurrency())
     : isSub
-      ? Math.min(swarm, 3)
+      ? Math.min(swarm, provider === "codex" ? 2 : 3)
       : Math.min(swarm, 12);
 
-  if (isSub && !mock) {
+  if (provider === "subscription" && !mock) {
     console.log("  ⚠️  Subscription mode draws on the SAME rate pool as your Claude Code usage.");
     console.log("     One small swarm can rate-limit the whole subscription for a while — keep");
     console.log("     runs tiny. Default model is Haiku (lightest on the pool); for better");
     console.log("     grounding use --model claude-sonnet-4-6 and expect faster throttling.\n");
+  }
+  if (provider === "codex" && !mock) {
+    console.log("  Codex provider uses your ChatGPT-authenticated Codex CLI session, not a platform API key.");
+    console.log("  Each agent step starts or resumes a Codex CLI turn; keep the first run small.\n");
   }
 
   const opts: RunOptions = {
@@ -405,6 +416,7 @@ async function main() {
     host: arg("host"),
     open: !process.argv.includes("--no-open"),
     dataDir: dataDirArg(),
+    readOnly: process.argv.includes("--read-only"),
   };
 
   // A swarm is a lot of automated traffic. Make an unfamiliar target a deliberate choice.

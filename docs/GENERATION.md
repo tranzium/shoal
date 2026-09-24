@@ -81,11 +81,10 @@ guess and starts being a scale model of your real users.
 
 ## Auth & models
 
-Generation is a single reasoning/vision call, so it needs Anthropic credentials:
-`--provider anthropic` (API key, uses `claude-opus-5`) or `--provider subscription` (your
-Claude Code login, uses `claude-sonnet-4-6`). It does **not** use structured-output mode,
-so it stays portable across models and degrades gracefully. Generating on an
-OpenAI-compatible endpoint is a planned addition.
+Generation is a single reasoning/vision call. It supports Anthropic API credentials,
+Claude Code subscription login, and the Codex CLI authenticated with ChatGPT. Codex uses
+the configured Codex model and structured JSON output; OpenAI-compatible endpoint
+generation remains unsupported.
 
 > **The moat.** Product-outlook generation is the cold-start on-ramp. The log-data path is
 > the defensible product: personas trained on the customer's private analytics, which no

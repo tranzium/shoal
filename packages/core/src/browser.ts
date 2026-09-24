@@ -127,17 +127,42 @@ export interface ComputerAction {
 export class AgentBrowser {
   private context!: BrowserContext;
   private cdp?: CDPSession;
+  private readOnly = false;
+  private initialHost = "";
   page!: Page;
 
-  async launch(url: string, headless: boolean): Promise<void> {
+  async launch(url: string, headless: boolean, readOnly = false): Promise<void> {
+    this.readOnly = readOnly;
+    this.initialHost = new URL(url).hostname.toLowerCase();
     const browser = await sharedBrowser(headless);
     this.context = await browser.newContext({
       viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
       deviceScaleFactor: 1,
       ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1",
     });
+    if (readOnly) {
+      // Read-only runs may render ordinary pages, but no mutating HTTP method can leave
+      // the browser context even if page code tries to submit something unexpectedly.
+      await this.context.route("**/*", async (route) => {
+        const method = route.request().method().toUpperCase();
+        if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+          await route.abort("blockedbyclient");
+          return;
+        }
+        if (route.request().isNavigationRequest()) {
+          const targetHost = new URL(route.request().url()).hostname.toLowerCase().replace(/^www\./, "");
+          const siteHost = this.initialHost.replace(/^www\./, "");
+          if (targetHost !== siteHost) {
+            await route.abort("blockedbyclient");
+            return;
+          }
+        }
+        await route.continue();
+      });
+    }
     this.page = await this.context.newPage();
     await this.page.goto(url, { waitUntil: "domcontentloaded" });
+    this.initialHost = new URL(this.page.url()).hostname.toLowerCase();
   }
 
   private async lifecycle(state: "frozen" | "active"): Promise<void> {
@@ -175,6 +200,59 @@ export class AgentBrowser {
     const { page } = this;
     const [x, y] = input.coordinate ?? [0, 0];
     const modifier = input.text && MODIFIERS[input.text.toLowerCase()];
+
+    if (this.readOnly) {
+      if (input.action === "type") return "blocked by read-only mode: typing is disabled";
+      if (input.action === "key") {
+        const key = (input.text ?? "").trim().toLowerCase();
+        const safeKeys = new Set(["tab", "shift+tab", "up", "down", "left", "right", "page_up", "page_down", "home", "end", "escape", "esc"]);
+        if (!safeKeys.has(key)) return `blocked by read-only mode: key ${input.text ?? ""} could submit or change data`;
+      }
+      if (["right_click", "double_click", "left_click_drag"].includes(input.action)) {
+        return `blocked by read-only mode: ${input.action} is disabled`;
+      }
+      if (input.action === "left_click") {
+        const gate = await page.evaluate(({ x: px, y: py, host }) => {
+          const target = document.elementFromPoint(px, py);
+          const anchor = target?.closest("a[href]") as HTMLAnchorElement | null;
+          const siteHost = host.replace(/^www\./, "");
+          const riskyActionLabel = (label: string) => {
+            const normalized = label.toLowerCase().replace(/\s+/g, " ").trim();
+            return /\b(?:buy|purchase|place order|order now|checkout|cart|book|reserve|payment|pay|subscribe|sign\s*up|register|log\s*in|login|sign\s*in|accept|agree|submit|send)\b/i.test(normalized) ||
+              /\b(?:connect|link|add|authorize|enable|start|launch|run)\b.{0,40}\b(?:exchange|broker|account|wallet|api\s*keys?|trading\s*bots?)\b/i.test(normalized) ||
+              /\b(?:exchange|broker|account|wallet|api\s*keys?|trading\s*bots?)\b.{0,40}\b(?:connect|link|add|authorize|enable|start|launch|run|trade)\b/i.test(normalized);
+          };
+          const riskyActionPath = (pathname: string, search: string) =>
+            /(?:^|\/)(?:checkout|cart|purchase|orders?|place-order|booking|book|reserve|payment|pay|signup|sign-up|register|login|log-in|signin|sign-in|account|wallet|deposit|withdraw(?:al)?|exchange\/connect|connect\/exchange|broker\/connect|connect\/broker|api[-_]?keys?|connect|authorize|bot\/start|bots?\/(?:start|launch|run|create)|trade-now)(?:\/|[.?_-]|$)/i.test(pathname) ||
+            /(?:^|[?&])(?:action|intent|mode)=(?:trade|connect|authorize|deposit|withdraw|order|checkout|subscribe)(?:&|$)/i.test(search);
+          if (!anchor) {
+            const button = target?.closest("button,[role=button],summary") as HTMLElement | null;
+            if (!button) return "blocked: read-only mode only follows links or opens non-submit page controls";
+            if (button.closest("form") || (button instanceof HTMLButtonElement && button.type === "submit")) {
+              return "blocked: form controls are disabled";
+            }
+            const label = `${button.getAttribute("aria-label") || ""} ${button.innerText || button.textContent || ""}`.toLowerCase();
+            if (riskyActionLabel(label)) {
+              return "blocked: this control may start a transaction, trading action, or account connection";
+            }
+            return "allowed";
+          }
+          if (anchor.closest("form")) return "blocked: links inside forms are disabled";
+          if (anchor.hasAttribute("download") || anchor.target === "_blank") return "blocked: downloads and new tabs are disabled";
+          const label = `${anchor.getAttribute("aria-label") || ""} ${anchor.innerText || anchor.textContent || ""}`;
+          if (riskyActionLabel(label)) return "blocked: this link may start a transaction, trading action, or account connection";
+          const href = new URL(anchor.href, location.href);
+          if (!["http:", "https:"].includes(href.protocol) || href.hostname.toLowerCase().replace(/^www\./, "") !== siteHost) {
+            return "blocked: read-only mode only follows links on the current site";
+          }
+          if (riskyActionPath(href.pathname, href.search)) {
+            return "blocked: this link may start a transaction, trading action, or account connection";
+          }
+          return "allowed";
+        }, { x, y, host: this.initialHost });
+        if (gate !== "allowed") return `${gate} (read-only mode)`;
+      }
+    }
 
     const withModifier = async (fn: () => Promise<void>) => {
       if (modifier) await page.keyboard.down(modifier);

@@ -1,4 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { codexJson } from "./codexCli.js";
 import type { Finding, TokenUsage } from "./types.js";
 
 /**
@@ -101,4 +105,71 @@ export async function verifyFindings(
     if (f) f.verdict = { status: v.status, note: v.note };
   }
   return usage;
+}
+
+/** Run the same evidence review through the local Codex CLI ChatGPT login. */
+export async function verifyFindingsWithCodex(
+  findings: Finding[],
+  task: string,
+  model?: string,
+): Promise<TokenUsage | undefined> {
+  if (findings.length === 0) return undefined;
+  const dir = await mkdtemp(join(tmpdir(), "shoal-codex-verify-"));
+  try {
+    const images: string[] = [];
+    const imageWrites: Promise<void>[] = [];
+    const rows = findings.map((f, i) => {
+      let imageNote = "";
+      if (f.evidence?.screenshot && images.length < MAX_SCREENSHOTS) {
+        const image = join(dir, `finding-${i}.jpg`);
+        imageWrites.push(writeFile(image, Buffer.from(f.evidence.screenshot, "base64")));
+        images.push(image);
+        imageNote = `\nScreenshot attachment ${images.length}: evidence for this finding.`;
+      }
+      return (
+        `\nFinding ${i}:\nPersona: ${f.personaName}\nSeverity: ${f.severity}\nTitle: ${f.title}\n` +
+        `Description: ${f.description}\nRecent trail:\n${(f.evidence?.recent ?? []).map((r) => `- ${r}`).join("\n") || "(none)"}${imageNote}`
+      );
+    });
+    await Promise.all(imageWrites);
+    const schema = {
+      type: "object",
+      properties: {
+        verdicts: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              index: { type: "integer" },
+              status: { type: "string", enum: ["confirmed", "suspect"] },
+              note: { type: "string" },
+            },
+            required: ["index", "status", "note"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["verdicts"],
+      additionalProperties: false,
+    };
+    const result = await codexJson({
+      model,
+      schema,
+      images,
+      prompt:
+        `Simulated user-testing agents attempted this task on a website: "${task}". ` +
+        `Review each finding against its action trail and attached screenshots. Mark "confirmed" when evidence is consistent with a real site problem; mark "suspect" when the issue may be an agent artifact, such as a missed click, hallucinated element, or misread screen. Keep suspect findings in the report. ` +
+        `Return one verdict for each finding using its zero-based index.\n${rows.join("\n")}`,
+    });
+    const parsed = result.value as { verdicts?: { index: number; status: "confirmed" | "suspect"; note: string }[] };
+    for (const verdict of parsed.verdicts ?? []) {
+      const finding = findings[verdict.index];
+      if (finding && (verdict.status === "confirmed" || verdict.status === "suspect")) {
+        finding.verdict = { status: verdict.status, note: verdict.note };
+      }
+    }
+    return result.usage;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }

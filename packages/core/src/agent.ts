@@ -2,12 +2,13 @@ import { AgentBrowser, type ComputerAction } from "./browser.js";
 import { A11yBrowser, type A11yAction } from "./a11yBrowser.js";
 import { AnthropicDriver } from "./anthropicDriver.js";
 import { OpenAIDriver } from "./openaiDriver.js";
+import { CodexDriver } from "./codexDriver.js";
 import { A11Y_TOOL_NAME, type AgentDriver, type Observation } from "./driver.js";
 import type { Barrier } from "./barrier.js";
 import type { ActiveGate } from "./gate.js";
 import type { Rendezvous } from "./rendezvous.js";
 import type { SceneRole } from "./scenes.js";
-import type { AgentState, Finding, Persona, RunOptions, Strategy, TokenUsage } from "./types.js";
+import type { AgentResult, AgentState, Finding, Persona, RunOptions, Strategy, TokenUsage } from "./types.js";
 
 export interface AgentCallbacks {
   onState: (state: AgentState) => void;
@@ -55,6 +56,7 @@ function systemPrompt(
   task: string,
   ctx: AgentContext,
   login?: { email: string; password: string },
+  readOnly = false,
 ): string {
   const strategy = ctx.strategy;
   const role = ctx.sceneRole;
@@ -93,6 +95,8 @@ ${
 - You have a patience budget of roughly ${persona.patience_steps} actions. When it runs out, your persona would leave — call task_result with outcome "gave_up".
 - The moment something confuses you, silently fails, or contradicts its own labels, call report_finding. A session with zero findings on a flawed site is a failed session.
 - When the task is done or you quit, call task_result. Do not continue after that.
+${readOnly ? "- This is a read-only visit. Do not type, activate controls, submit forms, contact anyone, or start an order. Follow ordinary same-site page links only; blocked actions will be reported as blocked." : ""}
+- If the task asks whether you would buy an offering, state your honest purchase intent, the offer you would choose (or none), and one concrete recommendation in task_result.
 ${
   a11y
     ? `- You are BLIND to the visual page. You perceive it only through your screen reader: read_screen surveys the accessibility tree, next_element / previous_element move focus, activate presses the focused control. There are no coordinates and no clicking.
@@ -109,12 +113,13 @@ export async function runLlmAgent(
   ctx: AgentContext = {},
 ): Promise<AgentState> {
   const modality = ctx.modality ?? "vision";
-  // subscription + anthropic both use the Anthropic driver (auth differs internally).
   const withScene = Boolean(ctx.sceneRole && ctx.rendezvous);
   const driver: AgentDriver =
-    opts.provider === "openai"
-      ? new OpenAIDriver(opts, modality, withScene)
-      : new AnthropicDriver(opts, modality, withScene);
+    opts.provider === "codex"
+      ? new CodexDriver(opts, modality, withScene)
+      : opts.provider === "openai"
+        ? new OpenAIDriver(opts, modality, withScene)
+        : new AnthropicDriver(opts, modality, withScene);
 
   const visionBrowser = modality === "vision" ? new AgentBrowser() : null;
   const a11yBrowser = modality === "a11y" ? new A11yBrowser() : null;
@@ -172,16 +177,16 @@ export async function runLlmAgent(
     }
     const first = await gated(async () => {
       if (a11yBrowser) {
-        await a11yBrowser.launch(opts.url, opts.headless);
+        await a11yBrowser.launch(opts.url, opts.headless, opts.readOnly);
         return { text: `Accessibility tree:\n${await a11yBrowser.snapshot()}` } as Observation;
       }
-      await visionBrowser!.launch(opts.url, opts.headless);
+      await visionBrowser!.launch(opts.url, opts.headless, opts.readOnly);
       return observe();
     });
     state.status = "browsing";
     push();
 
-    driver.init(systemPrompt(persona, opts.task, ctx, opts.login), first);
+    driver.init(systemPrompt(persona, opts.task, ctx, opts.login, opts.readOnly), first);
 
     const maxSteps = Math.min(opts.maxSteps, persona.patience_steps + 6);
     let finished = false;
@@ -199,7 +204,7 @@ export async function runLlmAgent(
       state.status = "thinking";
       push();
 
-      const turn = await driver.next();
+      const turn = await driver.next({ step: step + 1, maxSteps });
       if (turn.usage) cb.onUsage?.(turn.usage);
 
       if (turn.refusal) {
@@ -280,7 +285,8 @@ export async function runLlmAgent(
           cb.onFinding({ ...f, evidence: { recent: [...recent], screenshot: state.screenshot } });
           driver.addToolResult(call.id, "Finding recorded. Continue.");
         } else if (call.name === "task_result") {
-          const r = call.input as { outcome: "completed" | "gave_up"; reason: string };
+          const r = call.input as unknown as AgentResult;
+          state.result = r;
           state.status = r.outcome === "completed" ? "done" : "gave_up";
           state.lastThought = r.reason;
           cb.onThought(r.reason);
@@ -311,6 +317,7 @@ export async function runLlmAgent(
     state.lastThought = `error: ${(err as Error).message}`;
     push();
   } finally {
+    await driver.close?.();
     await visionBrowser?.close();
     await a11yBrowser?.close();
   }

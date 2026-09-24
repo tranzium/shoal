@@ -37,7 +37,7 @@ Environment:
 
 | Var | Purpose |
 |---|---|
-| `SHOAL_PROVIDER` | `anthropic` (default), `openai`, or `subscription` |
+| `SHOAL_PROVIDER` | `anthropic` (default), `openai`, `subscription`, or `codex` |
 | `SHOAL_MODEL` | Model for the swarm drivers |
 | `SHOAL_BASE_URL` | OpenAI-compatible endpoint (Ollama, OpenRouter, …) |
 | `SHOAL_ALLOW_DOMAINS` | Comma-separated non-local hosts the agent may target |
