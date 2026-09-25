@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { existsSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { RunController } from "./runController.js";
 import { TaskQueue } from "./taskQueue.js";
 import { safeConcurrency } from "./capacity.js";
@@ -264,8 +265,18 @@ export function serveOpts(): RunOptions {
   };
 }
 
+/** Same depth from src/cli.ts and dist/cli.js to the dashboard's built assets (server.ts's DASHBOARD_DIST). */
+function dashboardBuilt(): boolean {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return existsSync(join(here, "..", "..", "..", "apps", "dashboard", "dist", "index.html"));
+}
+
 async function serveCmd(): Promise<void> {
   const opts = serveOpts();
+
+  if (!dashboardBuilt()) {
+    console.error("  ⚠ dashboard not built — run `bun run build` first, or the dashboard will 404\n");
+  }
 
   // A service has no terminal to confirm against, so this is a hard gate, not a prompt:
   // an unset or allowlisted URL proceeds, anything else public needs --allow-domain/--yes

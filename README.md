@@ -53,14 +53,11 @@ order confirmation, and the finding is server-verified ground truth.
 Runs on macOS, Windows, and Linux — Node 18+ and a few GB of free RAM is all it needs.
 
 ```bash
-npm install
-npx playwright install chromium
-npm run demo
+bun install
+bunx playwright install chromium
+bun run build
+node packages/core/dist/cli.js demo
 ```
-
-No npm on your machine, only [Bun](https://bun.sh)? Every `npm run <script>` below works
-unchanged as `bun run <script>` — Bun recognizes `npm run` inside `package.json` scripts and
-runs them itself. Swap only the install step: `bun install` and `bunx playwright install chromium`.
 
 Open **http://localhost:4321** and watch 8 scripted agents (real Chromium browsers, zero
 API cost) tear into the bundled bait shop — a deliberately flawed demo store with four
@@ -74,7 +71,7 @@ planted UX traps:
 Watch how many agents each trap catches. Then try the concurrency demo:
 
 ```bash
-npm run demo -- --race --swarm 5
+node packages/core/dist/cli.js demo --race --swarm 5
 ```
 
 Five agents converge on a "last one in stock" page, park at a barrier, and claim it in the
@@ -84,10 +81,10 @@ oversell as **server-verified ground truth**, not an agent's opinion.
 Then the multi-user demos — where agents don't just test alone, they interact:
 
 ```bash
-npm run demo -- --scene marketplace              # seller ↔ buyer: the sale the seller never sees
-npm run demo -- --scene flash-sale --swarm 1000  # 1 unit, 1000 buyers rush it — how many oversell?
-npm run demo -- --scene collab-doc               # two editors at once: the silently-lost edit
-npm run demo -- --scene chat                     # sent ≠ delivered: the message that vanishes
+node packages/core/dist/cli.js demo --scene marketplace              # seller ↔ buyer: the sale the seller never sees
+node packages/core/dist/cli.js demo --scene flash-sale --swarm 1000  # 1 unit, 1000 buyers rush it — how many oversell?
+node packages/core/dist/cli.js demo --scene collab-doc               # two editors at once: the silently-lost edit
+node packages/core/dist/cli.js demo --scene chat                     # sent ≠ delivered: the message that vanishes
 ```
 
 A scene casts agents in interacting **roles** that coordinate live over the real site. In
@@ -128,8 +125,8 @@ lists them all.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...   # or `ant auth login`
-npm run build
-npm run shoal -- run http://localhost:3000 --task "Sign up and buy something" --swarm 8
+bun run build
+node packages/core/dist/cli.js run http://localhost:3000 --task "Sign up and buy something" --swarm 8
 ```
 
 **Want proof before you spend anything?** [`examples/real-run-report.md`](examples/real-run-report.md)
@@ -176,7 +173,7 @@ stays up — idle, or immediately running if you pass `--url` — until it gets 
 Runs are (re)started from the dashboard's restart button, or by submitting tasks over HTTP.
 
 ```bash
-npm run build
+bun run build
 node packages/core/dist/cli.js serve --port 4340 --no-open \
   --url https://your-app.test --provider subscription --model claude-haiku-4-5 \
   --task "Sign up and buy something"
@@ -328,11 +325,11 @@ bun run start -- \
   --playwright-browsers-path C:\Users\<you>\AppData\Local\ms-playwright
 ```
 
-`bun run start` (equivalently `npm start`) resolves to `node packages/core/dist/cli.js serve`
-(`package.json`'s `start` script) — a fixed, supervisor-friendly command line, with your flags
-appended after `--`. If your supervisor invokes commands directly instead of through
-`bun run`/`npm start`, the equivalent is `node packages/core/dist/cli.js serve <flags>`, and
-either form works from `.cmd`/`.js` alike since `node` is the real process either way.
+`bun run start` resolves to `node packages/core/dist/cli.js serve` (`package.json`'s `start`
+script) — a fixed, supervisor-friendly command line, with your flags appended after `--`. If
+your supervisor invokes commands directly instead of through `bun run start`, the equivalent
+is `node packages/core/dist/cli.js serve <flags>` — either form works since `node` is the
+real process either way.
 
 - **No `--url`/`--allow-domain` above, on purpose** — those make `serve` immediately launch a
   swarm against that target on every boot. Omit them so the service starts **idle** and waits
@@ -373,7 +370,7 @@ API key, no metering, just the flat fee you already pay. If you're logged into C
 Code, this works with zero setup:
 
 ```bash
-npm run shoal -- run https://your-app.test --provider subscription --swarm 3
+node packages/core/dist/cli.js run https://your-app.test --provider subscription --swarm 3
 ```
 
 It reads your Claude Code token live (the token rotates hourly — Claude Code keeps it
@@ -402,15 +399,15 @@ computer tool. This is the scale tier:
 
 ```bash
 # Qwen-VL via OpenRouter (cheap, good GUI grounding)
-OPENAI_API_KEY=sk-or-... npm run shoal -- run <url> --provider openai \
+OPENAI_API_KEY=sk-or-... node packages/core/dist/cli.js run <url> --provider openai \
   --model qwen/qwen3-vl-plus --swarm 50 --concurrency 10
 
 # GLM-V via Zhipu's endpoint
-OPENAI_API_KEY=... npm run shoal -- run <url> --provider openai \
+OPENAI_API_KEY=... node packages/core/dist/cli.js run <url> --provider openai \
   --base-url https://open.bigmodel.cn/api/paas/v4 --model glm-4.6v
 
 # Local model via Ollama — zero marginal cost per agent
-OPENAI_API_KEY=ollama npm run shoal -- run <url> --provider openai \
+OPENAI_API_KEY=ollama node packages/core/dist/cli.js run <url> --provider openai \
   --base-url http://localhost:11434/v1 --model qwen3-vl
 ```
 
@@ -434,7 +431,7 @@ agent in a big swarm can push frames — while the tank view is what represents 
 swarm at once.
 
 ```bash
-npm run demo -- --swarm 100 --concurrency 16     # 100 scripted agents, zero API cost
+node packages/core/dist/cli.js demo --swarm 100 --concurrency 16     # 100 scripted agents, zero API cost
 ```
 
 Mock mode scales as far as your RAM; LLM mode scales as far as your budget and your
@@ -477,12 +474,12 @@ audience, from either the **product outlook** or **real analytics**:
 
 ```bash
 # From what the product is (or inferred from the URL by vision)
-npm run shoal -- run https://your-app.test --generate 15 \
+node packages/core/dist/cli.js run https://your-app.test --generate 15 \
   --audience "impulse-buy streetwear store, Gen-Z, almost entirely mobile"
 
 # Grounded in real PostHog/Sentry/Clarity data — weighted by your actual traffic,
 # primed to hit your actual drop-offs and errors
-npm run shoal -- run https://your-app.test --generate 15 --from-logs ./analytics.json
+node packages/core/dist/cli.js run https://your-app.test --generate 15 --from-logs ./analytics.json
 ```
 
 Product-outlook generation is the zero-setup on-ramp; the **log-data path is where it gets
@@ -524,10 +521,10 @@ would have caught for pennies.
 ## Development
 
 ```bash
-npm install
-npm run build                 # dashboard + core
-npm run dev:dashboard         # Vite dev server (proxies /ws to :4321)
-npm run shoal -- demo         # scripted swarm
+bun install
+bun run build                          # dashboard + core
+bun run --cwd apps/dashboard dev       # Vite dev server (proxies /ws to :4321)
+node packages/core/dist/cli.js demo    # scripted swarm
 ```
 
 Built in the open. Fork it, break it, send a PR — or just point it at your own site and
