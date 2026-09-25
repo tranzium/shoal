@@ -345,6 +345,11 @@ export function Aquarium({ agents, swarmTotal, findings, selectedId, onSelect }:
       // ── HUD ──
       const done = list.filter((a) => a.status === "done").length;
       const quit = list.filter((a) => ["gave_up", "error", "stopped"].includes(a.status)).length;
+      // SWIMMING should mean "genuinely in flight" — a seeded-but-not-yet-picked-up agent
+      // is still "queued", not swimming, and the header pill counts it the same way. Without
+      // this the HUD and header disagreed on the same three fish (queued counted as swimming
+      // here, but as "waiting" up top).
+      const queued = list.filter((a) => a.status === "queued").length;
       const hudY = 18;
       g.fillStyle = "rgba(4,12,20,0.55)";
       g.fillRect(12, hudY - 6, 330, 40);
@@ -353,7 +358,7 @@ export function Aquarium({ agents, swarmTotal, findings, selectedId, onSelect }:
       g.fillText("SWIMMING", 22, hudY + 6);
       g.fillText("CONVERTED", 132, hudY + 6);
       g.fillText("QUIT", 246, hudY + 6);
-      drawPixelNumber(g, String(list.length - done - quit), 22, hudY + 12, 3, "#9fe8ff");
+      drawPixelNumber(g, String(list.length - done - quit - queued), 22, hudY + 12, 3, "#9fe8ff");
       drawPixelNumber(g, String(done), 132, hudY + 12, 3, "#ffd34d");
       drawPixelNumber(g, String(quit), 246, hudY + 12, 3, "#ff8b4a");
 
