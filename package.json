@@ -11,6 +11,7 @@
     "demo": "npm run build && node packages/core/dist/cli.js demo",
     "dev:dashboard": "cd apps/dashboard && npm run dev",
     "shoal": "node packages/core/dist/cli.js",
+    "start": "node packages/core/dist/cli.js serve",
     "test": "bun test packages/core/src"
   },
   "license": "MIT",

@@ -294,24 +294,34 @@ systemd, pm2, NSSM, whatever manages long-lived services on your box. It never e
 its own; it only stops on SIGINT/SIGTERM (or SIGBREAK on Windows).
 
 ```bash
-node packages/core/dist/cli.js serve \
+bun run start -- \
   --host 127.172.0.4 --port 80 --no-open \
-  --url https://shoal.test/ --allow-domain shoal.test \
-  --provider subscription --model claude-haiku-4-5 \
-  --task "Sign up and buy something"
+  --data data --provider subscription --model claude-haiku-4-5 \
+  --playwright-browsers-path C:\Users\<you>\AppData\Local\ms-playwright
 ```
 
-- **Command / working directory** — run `node` directly (not a `.cmd` wrapper), so the
-  supervisor's stop signal reaches the real process. Set the working directory to the repo
-  root (or wherever `.env` and the report files should live) — `shoal-report.md`/`.json`
-  land there and each run overwrites the last one.
+`bun run start` (equivalently `npm start`) resolves to `node packages/core/dist/cli.js serve`
+(`package.json`'s `start` script) — a fixed, supervisor-friendly command line, with your flags
+appended after `--`. If your supervisor invokes commands directly instead of through
+`bun run`/`npm start`, the equivalent is `node packages/core/dist/cli.js serve <flags>`, and
+either form works from `.cmd`/`.js` alike since `node` is the real process either way.
+
+- **No `--url`/`--allow-domain` above, on purpose** — those make `serve` immediately launch a
+  swarm against that target on every boot. Omit them so the service starts **idle** and waits
+  for work via `POST /api/tasks` (below); add them back only if you want a fixed restart
+  target baked into the service definition.
+- **Working directory** — set it to the repo root (or wherever `.env` and reports should
+  live): `.env` is read from there, and `reports/<id>.md`/`.json` land there per task.
 - **Autostart** — configure the service to start on boot/login and restart on crash; `serve`
   has no retry loop of its own, it just stays up until killed.
-- **Env vars, replacing `tools\run-shoal.cmd`** — that script's one-off env exports (API
-  keys, `SHOAL_INSECURE_TLS`, `PLAYWRIGHT_BROWSERS_PATH`, etc.) become the supervisor's
-  service-level env block instead, since there's no longer a shell around the process to
-  set them. `.env` in the working directory still works for anything you'd rather keep out
-  of the supervisor config.
+- **`--playwright-browsers-path <dir>`** does the same job as the `PLAYWRIGHT_BROWSERS_PATH`
+  env var, as a flag instead — for supervisors (like Warden/NSSM without
+  `AppEnvironmentExtra`) that can only pass command-line arguments, not per-service env vars.
+  Point it at wherever `bunx playwright install chromium` put the browsers (the path it prints
+  at install time, usually `%LOCALAPPDATA%\ms-playwright` on Windows). Any other env var your
+  setup needs (API keys, `SHOAL_INSECURE_TLS`, ...) still needs a real env var or `.env` — only
+  the browsers path has a CLI-flag escape hatch, since that's the one Playwright itself reads
+  outside the app's own option parsing.
 - **`--host 127.172.0.4 --port 80`** binds the dashboard to one specific address instead of
   every interface — the shape you want when a hostname (below) is expected to resolve to
   exactly this service and nothing else on the box.
