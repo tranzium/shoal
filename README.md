@@ -322,6 +322,95 @@ Notes:
 - Shutdown: Ctrl+C / SIGINT (and SIGBREAK on Windows) stops any running swarm, closes the browsers, and exits 0. An external SIGTERM on Windows is a hard kill regardless of the handler — that's Node's documented platform behavior, not a bug here.
 - The dashboard has no authentication. Anyone who can reach the port can start a swarm on your credentials.
 
+#### QA mode — answer-keyed missions, code-judged pass/fail, exit codes
+
+Repro mode and the verify pass are both opinion: a model reads evidence and judges it. QA
+mode is different — a mission's `qa` block is an **answer key**. Code (or, for one narrow
+kind, a single grading call checked against a verbatim quote) decides pass/fail; no LLM is
+asked "is this a bug?" A mission with a `qa` block is graded, not reviewed:
+
+```yaml
+title: QA - pricing
+url: https://site.example/pricing/
+task: Click the Yearly billing toggle.   # navigator instruction; unused if every check is "start"
+swarm: 1                                 # = repeats in QA mode (same navigator, no persona spread)
+qa:
+  hosts: [site.example, static.site.example]   # REQUIRED allowlist — also the guard scope
+  maxSteps: 12                                 # optional, default 12
+  ignore: ["/posthog/i"]                       # optional regexes dropped from guard evidence
+  expect:
+    - id: price-monthly                # unique within the mission
+      when: start                      # start (graded on the start snapshot) | reach (default)
+      on: /pricing/                    # path prefix the check applies to (required for reach, except kind url)
+      kind: text                       # url | text | attr | cookie | judge
+      selector: ".price"               # optional — omit to read the whole page body
+      equals: "$39.99"                 # or: contains: "...", or: absent: true | "some text"
+```
+
+Check kinds (all code-evaluated except `judge`):
+
+| kind | fields | what it checks |
+|---|---|---|
+| `url` | `equals`/`contains` (path), `query` (exact param match) | the navigator's current URL |
+| `text` | `selector?`, `equals`/`contains`/`absent` | `innerText` of a selector, or the whole body |
+| `attr` | `selector`, `name`, `startsWith`/`equals` | one element's attribute |
+| `cookie` | `name`, `value?` | a cookie via `context.cookies()` (HttpOnly included) |
+| `judge` | `ask`, `answer`, `on` (required) | see below |
+
+A mission with only `when: start` checks makes **zero model calls** — the navigator never
+runs, no credentials are needed, and the task-submit / CLI credential checks skip
+accordingly. Otherwise a stripped-down navigator (no persona, no findings pressure) drives a
+real browser toward each check's target state and stops the moment every non-`judge`
+expectation is satisfied, without spending another model call.
+
+**Resolution:** a `start` check that misses is `fail`. A `reach` check whose `on` page was
+visited but never hit is `fail`; if the page was never visited at all, it's `not_reached` (a
+navigator miss, not a fact about the site). Across `swarm` repeats: any `fail` wins, else any
+`pass` wins, else `not_reached`. Mission verdict: `fail` if any expectation or guard failed,
+else `inconclusive` if anything is `not_reached`, else `pass`.
+
+**Guards** (independent of `expect`, evidence-collected automatically, scoped to `hosts`):
+a document/XHR/fetch response ≥400, an uncaught page error, a console error, or the page body
+matching `/Error 1101|Worker threw exception/`. Any guard hit fails the mission regardless of
+what the checks say. `ignore` (regex list) drops known-noisy matches before grading. A
+top-level navigation to a host outside `hosts` is fenced off (aborted, not followed) and
+listed under `blockedNavigations` — it's never counted as a guard hit.
+
+**The judge** (`kind: judge`) is the one LLM-graded check kind, and it's still an answer key,
+not an opinion: after the navigator's session, one call grades every `judge` check against the
+captured page text + screenshot of its `on` page, returning `pass`/`fail` plus a **verbatim
+quote**. Code then verifies that quote is an actual (whitespace-normalized) substring of what
+the model was shown — an invented or missing quote downgrades the check to `not_reached`
+rather than being trusted. Skipped (→ `not_reached`) in mock mode or without credentials. QA
+missions never run the ordinary verify pass — navigator `report_finding` calls are listed in
+the report as-is, not graded.
+
+**`shoal qa <mission> --data <dir> [--out <dir>]`** runs one mission headlessly (no
+dashboard — an ephemeral port is bound and closed when the run finishes) and exits:
+
+| exit code | verdict |
+|---|---|
+| `0` | pass |
+| `1` | fail |
+| `2` | inconclusive |
+| `3` | could not run — unknown/invalid mission, or missing credentials for a `reach`/`judge` check |
+
+It writes `reports/qa-<mission>-<yyyymmdd-hhmmss>.json` and `.md`, plus evidence JPEGs in a
+sibling `reports/qa-<mission>-<yyyymmdd-hhmmss>-evidence/` folder (referenced from each
+expectation's `evidence.screenshot`). The JSON shape: `{mission, url, model, repeats,
+startedAt, finishedAt, verdict, expectations, guards, blockedNavigations, usage}`.
+
+`POST /api/tasks {"mission": "<qa mission>"}` runs a QA mission the same way through the task
+queue: the task's report JSON carries the same `qa` block under `summary.qa`, and
+`GET /api/tasks` / the task's `TaskSummary` gets a `qaVerdict` field. There's no dashboard UI
+for it beyond that — QA missions are meant to be graded from the report or the exit code, not
+watched live.
+
+**Rails this doesn't enforce for you:** `hosts` is the only allowlist QA mode has — there's no
+`--yes`/interactive-confirm path, so whoever writes the mission YAML is choosing the target.
+Keep QA missions pointed at staging/practice environments, never at production accounts with
+real orders, payment methods, or live broker keys.
+
 ### Live data — strategies, personas, missions
 
 By default shoal reads its strategy and persona libraries from the package
@@ -334,7 +423,7 @@ instead:
   strategies.yaml   # optional — falls back to the packaged library if absent
   personas.yaml     # optional — falls back to the packaged library if absent
   missions/
-    signup.yaml      # { title, url, task, strategy?, swarm?, personas? }
+    signup.yaml      # { title, url, task, strategy?, swarm?, personas?, qa? }
     paid.yaml
 ```
 

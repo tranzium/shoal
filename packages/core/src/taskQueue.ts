@@ -3,9 +3,10 @@ import { join } from "node:path";
 import { runSwarm } from "./orchestrator.js";
 import { writeTaskReport } from "./report.js";
 import { credentialsError } from "./subscriptionAuth.js";
+import { qaNeedsCredentials } from "./qa.js";
 import { ZERO_USAGE } from "./pricing.js";
 import type { ShoalServer } from "./server.js";
-import type { Finding, RunOptions, RunSummary } from "./types.js";
+import type { Finding, QaConfig, QaVerdict, RunOptions, RunSummary } from "./types.js";
 
 /**
  * FIFO task intake for `shoal serve`. Exactly one task runs at a time; the next starts
@@ -37,17 +38,21 @@ export interface TaskSummary {
   summary?: RunSummary;
   reportPath?: string;
   error?: string;
+  /** QA mode: the aggregated verdict, mirrored from `summary.qa.verdict` once the task finishes. */
+  qaVerdict?: QaVerdict;
 }
 
 interface InternalTask extends TaskSummary {
   login?: { email: string; password: string };
   findings: Finding[];
   abort?: AbortController;
+  qaConfig?: QaConfig;
+  qaMissionName?: string;
 }
 
 function toSummary(t: InternalTask): TaskSummary {
-  const { login: _login, findings: _findings, abort: _abort, ...summary } = t;
-  return summary;
+  const { login: _login, findings: _findings, abort: _abort, qaConfig: _qaConfig, qaMissionName: _qaMissionName, ...summary } = t;
+  return { ...summary, qaVerdict: t.summary?.qa?.verdict };
 }
 
 export type SubmitResult = { ok: true; task: TaskSummary } | { ok: false; error: string };
@@ -72,6 +77,7 @@ export class TaskQueue {
 
   submit(input: TaskInput): SubmitResult {
     let body = input;
+    let qaMissionName: string | undefined;
     if (typeof input.mission === "string" && input.mission.trim()) {
       const name = input.mission.trim();
       const mission = this.server.dataStore?.getMission(name);
@@ -79,6 +85,7 @@ export class TaskQueue {
       // Mission fields are defaults; anything the caller also set (e.g. a login, or an
       // explicit swarm override) wins — same "in place of url/task" contract as the docs.
       const { mission: _mission, ...overrides } = input;
+      qaMissionName = mission.qa ? name : undefined;
       body = {
         title: mission.title,
         url: mission.url,
@@ -86,6 +93,7 @@ export class TaskQueue {
         strategy: mission.strategy,
         swarm: mission.swarm,
         personas: mission.personas,
+        qa: mission.qa,
         ...overrides,
       };
     }
@@ -130,11 +138,14 @@ export class TaskQueue {
         }
       }
     }
+    const qa = body.qa as QaConfig | undefined;
+
     // A zero-agent task (used by tests, and a legitimate "just validate the request" case)
     // never touches the provider, so there's nothing to refuse here. A real task does — and
     // this is checked LIVE, not just at `serve` boot, because a subscription token rotates
-    // hourly and can expire hours into a long-lived service's life.
-    if (swarm > 0) {
+    // hourly and can expire hours into a long-lived service's life. A QA mission graded
+    // entirely from the start snapshot (no reach/judge checks) makes zero model calls too.
+    if (swarm > 0 && (!qa || qaNeedsCredentials(qa))) {
       const credError = credentialsError(this.base.provider);
       if (credError) return { ok: false, error: credError };
     }
@@ -167,6 +178,8 @@ export class TaskQueue {
       position: this.queued.length,
       createdAt: Date.now(),
       findings: [],
+      qaConfig: qa,
+      qaMissionName,
     };
     this.queued.push(record);
     this.broadcastQueue();
@@ -294,6 +307,8 @@ export class TaskQueue {
       extension: task.extension,
       expect: task.expect,
       login: task.login,
+      qa: task.qaConfig,
+      qaMission: task.qaMissionName,
       open: false,
     };
 

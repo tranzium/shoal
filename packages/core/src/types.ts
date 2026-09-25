@@ -51,6 +51,96 @@ export interface Mission {
   strategy?: string;
   swarm?: number;
   personas?: string[];
+  /** QA mode: answer-keyed expectations the code (or a judge call) grades pass/fail against,
+   *  instead of an opinion-only agent report. See qa.ts. */
+  qa?: QaConfig;
+}
+
+/** One code- (or judge-) graded expectation in a QA mission's answer key. */
+export interface QaExpectCheck {
+  /** Unique within the mission's `expect` list. */
+  id: string;
+  /** "start": graded only against the snapshot right after the start URL loads.
+   *  "reach": graded against every snapshot while the navigator is on the `on` page. Default "reach". */
+  when?: "start" | "reach";
+  /** Path prefix this check applies to. Required for "reach" checks except kind "url"
+   *  (whose own equals/contains/query already define the destination); required for "judge". */
+  on?: string;
+  kind: "url" | "text" | "attr" | "cookie" | "judge";
+  /** Scopes "text"/"attr" to one element; omitted "text" checks read the whole body. */
+  selector?: string;
+  equals?: string;
+  contains?: string;
+  /** true: selector must not exist / must be empty. string: that text must NOT appear. */
+  absent?: boolean | string;
+  /** "url" kind: required query params (exact match). */
+  query?: Record<string, string>;
+  /** "attr"/"cookie" kind: the attribute or cookie name. */
+  name?: string;
+  /** "attr" kind. */
+  startsWith?: string;
+  /** "cookie" kind: exact expected value; omitted = just check presence. */
+  value?: string;
+  /** "judge" kind: the question asked of the grading model. */
+  ask?: string;
+  /** "judge" kind: the expected answer (graded by the judge model, verified via quote check). */
+  answer?: string;
+}
+
+/** A QA mission's answer key, plus the navigation/error-guard scope it's graded within. */
+export interface QaConfig {
+  /** REQUIRED allowlist of hostnames the navigator may visit — also the guard scope.
+   *  The start URL's host must be listed. Top-level navigations elsewhere are fenced off. */
+  hosts: string[];
+  /** Hard cap on navigator actions per repeat. Default 12. */
+  maxSteps?: number;
+  /** Regexes dropped from guard evidence before grading (e.g. known-noisy third-party errors). */
+  ignore?: string[];
+  expect: QaExpectCheck[];
+}
+
+export type QaCheckStatus = "pass" | "fail" | "not_reached";
+export type QaGuardKind = "http" | "pageerror" | "console" | "body";
+export type QaVerdict = "pass" | "fail" | "inconclusive";
+
+export interface QaEvidence {
+  url?: string;
+  step?: number;
+  text?: string;
+  /** Path to a saved JPEG, relative to the report — filled in when the report is written. */
+  screenshot?: string;
+}
+
+export interface QaExpectationResult {
+  id: string;
+  kind: QaExpectCheck["kind"];
+  when: "start" | "reach";
+  status: QaCheckStatus;
+  gradedBy: "code" | "judge";
+  expected: string;
+  actual?: string;
+  evidence?: QaEvidence;
+}
+
+export interface QaGuardResult {
+  kind: QaGuardKind;
+  status: "pass" | "fail";
+  items: string[];
+}
+
+/** The full report for one QA mission run (one or more repeats, aggregated). */
+export interface QaReport {
+  mission: string;
+  url: string;
+  model?: string;
+  repeats: number;
+  startedAt: number;
+  finishedAt: number;
+  verdict: QaVerdict;
+  expectations: QaExpectationResult[];
+  guards: QaGuardResult[];
+  blockedNavigations: string[];
+  usage: TokenUsage;
 }
 
 export type AgentStatus =
@@ -96,6 +186,16 @@ export interface AgentState {
   modality?: "vision" | "a11y";
   /** Repro mode: browser-side errors this agent's session observed (deduped). */
   capturedErrors?: CapturedError[];
+  /** QA mode: this repeat's per-expectation/guard grading, before cross-repeat aggregation. */
+  qaResult?: QaSessionResult;
+}
+
+/** One QA repeat's outcome, before aggregation across repeats (see qa.ts). */
+export interface QaSessionResult {
+  expectations: QaExpectationResult[];
+  guards: QaGuardResult[];
+  blockedNavigations: string[];
+  usage?: TokenUsage;
 }
 
 /**
@@ -218,6 +318,8 @@ export interface RunSummary {
   verdict?: { status: ReproVerdict; evidence: string[] };
   /** testmail.app: which personas got a sign-up address, whether mail arrived, and delivery time. */
   inboxDeliveries?: InboxDelivery[];
+  /** QA mode: the aggregated answer-key verdict across all repeats. */
+  qa?: QaReport;
 }
 
 export interface RunOptions {
@@ -283,4 +385,11 @@ export interface RunOptions {
    * the report's reproduced / not_reproduced / inconclusive verdict.
    */
   expect?: string;
+  /**
+   * QA mode: answer-keyed expectations, code-graded pass/fail. When set, `swarm` repeats
+   * run the same navigator (no persona spread) instead of a persona swarm; see qa.ts.
+   */
+  qa?: QaConfig;
+  /** QA mode: the mission name, for the report filename/JSON (`qa-<mission>-<timestamp>`). */
+  qaMission?: string;
 }
