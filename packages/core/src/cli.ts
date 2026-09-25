@@ -93,6 +93,11 @@ const HELP = `
                          of the packaged library (env: SHOAL_DATA). Missing files fall back to
                          the packaged defaults. \`shoal serve\` watches this dir and reloads on
                          edit — no restart needed; a broken YAML edit keeps the last good copy.
+    --extension <dir>    Repro mode: load this unpacked Chrome extension (--load-extension).
+                         Each agent gets its own persistent context instead of the shared pool.
+    --expect <text>      Repro mode: text or /regex/flags to match against captured console/
+                         pageerror/network/extension errors. Report gets a reproduced |
+                         not_reproduced | inconclusive verdict with the matching evidence.
     --playwright-browsers-path <dir>
                          Same as the PLAYWRIGHT_BROWSERS_PATH env var, as a flag — for
                          supervisors (Warden/NSSM) that can only pass arguments, not env vars.
@@ -254,6 +259,8 @@ export function serveOpts(): RunOptions {
     host: arg("host"),
     open: !process.argv.includes("--no-open"),
     dataDir: dataDirArg(),
+    extension: arg("extension"),
+    expect: arg("expect"),
   };
 }
 
@@ -416,6 +423,8 @@ async function main() {
     host: arg("host"),
     open: !process.argv.includes("--no-open"),
     dataDir: dataDirArg(),
+    extension: arg("extension"),
+    expect: arg("expect"),
   };
 
   // A swarm is a lot of automated traffic. Make an unfamiliar target a deliberate choice.

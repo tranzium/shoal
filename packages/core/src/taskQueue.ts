@@ -23,6 +23,10 @@ export interface TaskSummary {
   swarm: number;
   strategy?: string;
   personas?: string[];
+  /** Repro mode: unpacked extension dir this task's agents loaded. */
+  extension?: string;
+  /** Repro mode: text/regex the report's verdict is matched against. */
+  expect?: string;
   status: TaskStatus;
   position: number | null;
   createdAt: number;
@@ -104,6 +108,8 @@ export class TaskQueue {
         ? (body.personas as string[])
         : undefined;
     const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : task.slice(0, 60);
+    const extension = typeof body.extension === "string" && body.extension.trim() ? body.extension.trim() : undefined;
+    const expect = typeof body.expect === "string" && body.expect.trim() ? body.expect.trim() : undefined;
 
     let login: { email: string; password: string } | undefined;
     if (body.login && typeof body.login === "object") {
@@ -122,6 +128,8 @@ export class TaskQueue {
       swarm,
       strategy,
       personas,
+      extension,
+      expect,
       login,
       status: "queued",
       position: this.queued.length,
@@ -241,6 +249,8 @@ export class TaskQueue {
       concurrency: Math.max(1, Math.min(task.swarm, this.base.concurrency || task.swarm)),
       strategyIds: task.strategy ? [task.strategy] : undefined,
       personaIds: task.personas,
+      extension: task.extension,
+      expect: task.expect,
       login: task.login,
       open: false,
     };

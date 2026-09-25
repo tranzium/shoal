@@ -94,7 +94,26 @@ export interface AgentState {
   strategyName?: string;
   /** "vision" (screenshots) or "a11y" (accessibility tree — screen-reader users). */
   modality?: "vision" | "a11y";
+  /** Repro mode: browser-side errors this agent's session observed (deduped). */
+  capturedErrors?: CapturedError[];
 }
+
+/**
+ * A deduped browser-side error observed during a repro-mode session: console errors,
+ * uncaught page exceptions, failed network requests, and the loaded extension's own
+ * service-worker console errors. Deduped by (source, text); `count` and `firstStep`
+ * track repeats and when it first appeared.
+ */
+export interface CapturedError {
+  source: "console" | "pageerror" | "network" | "extension";
+  text: string;
+  count: number;
+  /** The agent's step number (1-based) when this error was first observed. */
+  firstStep: number;
+}
+
+/** Task-level repro verdict: did the swarm's captured errors match `RunOptions.expect`? */
+export type ReproVerdict = "reproduced" | "not_reproduced" | "inconclusive";
 
 export interface TokenUsage {
   input: number;
@@ -173,6 +192,10 @@ export interface RunSummary {
   usage: TokenUsage;
   /** null when we don't know the model's price (unpriced third-party/local model). */
   costUsd: number | null;
+  /** Repro mode: browser errors captured across the whole swarm, deduped and merged. */
+  capturedErrors?: CapturedError[];
+  /** Repro mode: set when `RunOptions.expect` was provided. */
+  verdict?: { status: ReproVerdict; evidence: string[] };
 }
 
 export interface RunOptions {
@@ -227,4 +250,15 @@ export interface RunOptions {
    * files fall back to the packaged defaults. Default: undefined (packaged paths only).
    */
   dataDir?: string;
+  /**
+   * Repro mode: path to an unpacked Chrome extension directory. When set, every agent in
+   * this run loads it via `--load-extension` instead of using the shared headless pool
+   * (extensions need their own persistent context).
+   */
+  extension?: string;
+  /**
+   * Repro mode: text or `/regex/flags` to match against captured browser errors. Drives
+   * the report's reproduced / not_reproduced / inconclusive verdict.
+   */
+  expect?: string;
 }
