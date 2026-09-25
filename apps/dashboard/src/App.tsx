@@ -74,11 +74,19 @@ interface RunState {
   strategies?: { id: string; name: string }[];
 }
 
-/** The task queue's state — who's running (if submitted via POST /api/tasks) and how many wait behind them. */
+/** The task queue's state — who's running (if submitted via POST /api/tasks) and how many wait behind them.
+ *  Its mere presence (non-null) also means this dashboard is task-queue-driven, not a plain run. */
 interface TaskQueueState {
   runningId: string | null;
   runningTitle: string | null;
   queueLength: number;
+  lastTask: { id: string; title: string; status: "queued" | "running" | "done" | "failed" | "cancelled"; error?: string } | null;
+}
+
+interface DataStatus {
+  strategiesError: string | null;
+  personasError: string | null;
+  missionsError: string | null;
 }
 
 export function App() {
@@ -92,6 +100,7 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [run, setRun] = useState<RunState | null>(null);
   const [taskQueue, setTaskQueue] = useState<TaskQueueState | null>(null);
+  const [dataStatus, setDataStatus] = useState<DataStatus | null>(null);
   // Draft config the operator edits before hitting restart.
   const [draftSwarm, setDraftSwarm] = useState<number | null>(null);
   const [draftStrategy, setDraftStrategy] = useState<string | null>(null);
@@ -134,6 +143,7 @@ export function App() {
           ]);
         else if (ev.type === "run_state") setRun(ev);
         else if (ev.type === "task_queue") setTaskQueue(ev);
+        else if (ev.type === "data_status") setDataStatus(ev);
         else if (ev.type === "run_reset") {
           setAgents(new Map());
           setThoughts([]);
@@ -177,6 +187,10 @@ export function App() {
   };
   const swarmValue = draftSwarm ?? run?.swarm ?? 8;
   const strategyValue = draftStrategy ?? run?.strategy ?? "default";
+  // A task_queue broadcast only ever comes from `shoal serve`'s TaskQueue — its mere presence
+  // means tasks arrive via POST /api/tasks, so the run/swarm/strategy controls below (which
+  // only ever relaunch `serve`'s own boot options) can't affect what's actually running.
+  const serveMode = taskQueue !== null;
   const restart = () => {
     send({ cmd: "restart", swarm: swarmValue, strategy: strategyValue });
     setDraftSwarm(null);
@@ -249,6 +263,15 @@ export function App() {
         </div>
       </header>
 
+      {dataStatus && (dataStatus.strategiesError || dataStatus.personasError || dataStatus.missionsError) && (
+        <div className="data-error-banner">
+          ⚠ data files:
+          {dataStatus.strategiesError && <span> strategies — {dataStatus.strategiesError}</span>}
+          {dataStatus.personasError && <span> personas — {dataStatus.personasError}</span>}
+          {dataStatus.missionsError && <span> missions — {dataStatus.missionsError}</span>}
+        </div>
+      )}
+
       {run && (
         <div className="controls">
           <span className={`phase ${run.phase}`}>
@@ -261,17 +284,17 @@ export function App() {
 
           <button
             className="ctrl stop"
-            disabled={run.phase !== "running"}
+            disabled={run.phase !== "running" || serveMode}
             onClick={() => send({ cmd: "stop" })}
-            title="Stop every agent as soon as it finishes its current step"
+            title={serveMode ? "Tasks come from POST /api/tasks — cancel one with DELETE /api/tasks/:id instead" : "Stop every agent as soon as it finishes its current step"}
           >
             ⏹ Stop
           </button>
           <button
             className="ctrl restart"
-            disabled={run.phase === "stopping"}
+            disabled={run.phase === "stopping" || serveMode}
             onClick={restart}
-            title="Stop anything in flight and launch a fresh swarm"
+            title={serveMode ? "Tasks come from POST /api/tasks — this relaunches serve's own boot options, not a task" : "Stop anything in flight and launch a fresh swarm"}
           >
             ↻ {run.phase === "running" ? "Restart" : "Run again"}
           </button>
@@ -283,13 +306,20 @@ export function App() {
               min={1}
               max={5000}
               value={swarmValue}
+              disabled={serveMode}
               onChange={(e) => setDraftSwarm(Number(e.target.value))}
+              title={serveMode ? "Set per-task via POST /api/tasks — this field only affects Run again" : undefined}
             />
           </label>
 
           <label className="ctrl-field">
             strategy
-            <select value={strategyValue} onChange={(e) => setDraftStrategy(e.target.value)}>
+            <select
+              value={strategyValue}
+              disabled={serveMode}
+              onChange={(e) => setDraftStrategy(e.target.value)}
+              title={serveMode ? "Set per-task via POST /api/tasks — this field only affects Run again" : undefined}
+            >
               <option value="default">default</option>
               {run.strategies?.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -299,7 +329,7 @@ export function App() {
             </select>
           </label>
 
-          {(draftSwarm !== null || draftStrategy !== null) && (
+          {!serveMode && (draftSwarm !== null || draftStrategy !== null) && (
             <span className="pending-note">applies on restart</span>
           )}
 
@@ -337,7 +367,16 @@ export function App() {
               }}
             />
             {run?.phase === "idle" && list.length === 0 && (
-              <div className="tank-idle">🐟 waiting for a task…</div>
+              <div className="tank-idle">
+                {taskQueue?.lastTask?.status === "failed" ? (
+                  <div className="tank-idle-failed">
+                    <div>✗ “{taskQueue.lastTask.title}” failed</div>
+                    {taskQueue.lastTask.error && <div className="tank-idle-error">{taskQueue.lastTask.error}</div>}
+                  </div>
+                ) : (
+                  "🐟 waiting for a task…"
+                )}
+              </div>
             )}
             {selected && (
               <div className="drilldown">

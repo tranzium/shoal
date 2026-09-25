@@ -60,7 +60,13 @@ export class TaskQueue {
   constructor(
     private server: ShoalServer,
     private base: RunOptions,
-  ) {}
+  ) {
+    // Broadcast once at wire-up time, even with zero tasks yet — the dashboard uses the
+    // presence of a task_queue event to tell "driven by the task queue" from a plain run,
+    // and a late-joining or first-load dashboard should see that immediately, not only
+    // after the first task lands.
+    this.broadcastQueue();
+  }
 
   submit(input: TaskInput): SubmitResult {
     let body = input;
@@ -103,10 +109,25 @@ export class TaskQueue {
     }
 
     const strategy = typeof body.strategy === "string" ? body.strategy : undefined;
+    if (strategy) {
+      const pool = this.server.dataStore?.getStrategies();
+      if (pool && !pool.some((s) => s.id === strategy)) {
+        return { ok: false, error: `unknown strategy "${strategy}". Available: ${pool.map((s) => s.id).join(", ")}` };
+      }
+    }
     const personas =
       Array.isArray(body.personas) && body.personas.every((p) => typeof p === "string")
         ? (body.personas as string[])
         : undefined;
+    if (personas && personas.length > 0) {
+      const pool = this.server.dataStore?.getPersonas();
+      if (pool) {
+        const unknown = personas.filter((id) => !pool.some((p) => p.id === id));
+        if (unknown.length > 0) {
+          return { ok: false, error: `unknown persona(s): ${unknown.join(", ")}. Available: ${pool.map((p) => p.id).join(", ")}` };
+        }
+      }
+    }
     const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : task.slice(0, 60);
     const extension = typeof body.extension === "string" && body.extension.trim() ? body.extension.trim() : undefined;
     const expect = typeof body.expect === "string" && body.expect.trim() ? body.expect.trim() : undefined;
@@ -154,18 +175,23 @@ export class TaskQueue {
     return t ? toSummary(t) : undefined;
   }
 
-  async getReport(id: string): Promise<{ md: string; json: unknown } | undefined> {
+  /** `not_found`: no task with this id (unknown or lost to a restart). `not_ready`: the task
+   *  exists but never produced a report — still queued/running, or ended failed/cancelled. */
+  async getReport(
+    id: string,
+  ): Promise<{ ok: true; md: string; json: unknown } | { ok: false; reason: "not_found" } | { ok: false; reason: "not_ready"; status: TaskStatus; error?: string }> {
     const t = this.findInternal(id);
-    if (!t || !t.reportPath) return undefined;
+    if (!t) return { ok: false, reason: "not_found" };
+    if (!t.reportPath) return { ok: false, reason: "not_ready", status: t.status, error: t.error };
     try {
       const dir = join(process.cwd(), "reports");
       const [md, jsonRaw] = await Promise.all([
         readFile(join(dir, `${id}.md`), "utf8"),
         readFile(join(dir, `${id}.json`), "utf8"),
       ]);
-      return { md, json: JSON.parse(jsonRaw) };
+      return { ok: true, md, json: JSON.parse(jsonRaw) };
     } catch {
-      return undefined;
+      return { ok: false, reason: "not_ready", status: t.status, error: t.error };
     }
   }
 
@@ -198,11 +224,13 @@ export class TaskQueue {
   }
 
   private broadcastQueue(): void {
+    const last = this.history[this.history.length - 1];
     this.server.broadcast({
       type: "task_queue",
       runningId: this.running?.id ?? null,
       runningTitle: this.running?.title ?? null,
       queueLength: this.queued.length,
+      lastTask: last ? { id: last.id, title: last.title, status: last.status, error: last.error } : null,
     });
   }
 
@@ -228,6 +256,7 @@ export class TaskQueue {
     task.startedAt = Date.now();
     task.abort = new AbortController();
     this.running = task;
+    console.log(`  ▶ task ${task.id} started — ${task.title}`);
     this.server.resetRunState();
     this.server.setHealth("running", this.seq);
     this.broadcastQueue();
@@ -280,6 +309,9 @@ export class TaskQueue {
       task.finishedAt = Date.now();
       this.history.push(task);
       this.running = undefined;
+      if (task.status === "failed") console.log(`  ✗ task ${task.id} failed — ${task.error}`);
+      else if (task.status === "cancelled") console.log(`  ⏹ task ${task.id} cancelled`);
+      else console.log(`  ✓ task ${task.id} done — report: ${task.reportPath ?? "(none)"}`);
       this.server.setHealth("idle", null);
       this.broadcastQueue();
       this.server.broadcast({

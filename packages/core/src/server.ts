@@ -204,6 +204,7 @@ export class ShoalServer {
   private done?: ShoalEvent;
   private runState?: ShoalEvent;
   private dataStatus?: ShoalEvent;
+  private taskQueueState?: ShoalEvent;
   /** Set by the RunController; lets the dashboard drive the run lifecycle. */
   onControl?: (cmd: ControlCommand) => void;
   /** Set by `shoal serve`; when present, the /api/tasks routes are live. */
@@ -341,8 +342,12 @@ export class ShoalServer {
         }
         if (id && sub === "report" && req.method === "GET") {
           const report = await this.tasks.getReport(id);
-          if (!report) {
-            json(404, { error: `no report available for ${id}` });
+          if (!report.ok) {
+            if (report.reason === "not_found") {
+              json(404, { error: `unknown task: ${id}` });
+            } else {
+              json(409, { status: report.status, error: report.error ?? `task is ${report.status} — no report yet` });
+            }
             return;
           }
           const format = new URL(req.url ?? "/", "http://x").searchParams.get("format");
@@ -482,6 +487,7 @@ export class ShoalServer {
       ...(this.clusters ? [this.clusters] : []),
       ...(this.done ? [this.done] : []),
       ...(this.dataStatus ? [this.dataStatus] : []),
+      ...(this.taskQueueState ? [this.taskQueueState] : []),
     ];
   }
 
@@ -516,6 +522,7 @@ export class ShoalServer {
     else if (event.type === "run_state") this.runState = event;
     else if (event.type === "run_done") this.done = event;
     else if (event.type === "data_status") this.dataStatus = event;
+    else if (event.type === "task_queue") this.taskQueueState = event;
     const payload = JSON.stringify(event);
     for (const client of this.wss.clients) {
       if (client.readyState === WebSocket.OPEN) client.send(payload);

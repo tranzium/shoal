@@ -159,8 +159,18 @@ export type ShoalEvent =
   /** Live friction map — findings clustered and ranked by how many users hit each wall. */
   | { type: "clusters"; clusters: FrictionCluster[]; total: number; ts: number }
   | { type: "run_done"; findings: Finding[]; summary: RunSummary }
-  /** The task queue's state — used by the dashboard to show what's running and how much is waiting. */
-  | { type: "task_queue"; runningId: string | null; runningTitle: string | null; queueLength: number }
+  /** The task queue's state — used by the dashboard to show what's running and how much is waiting.
+   *  Also the dashboard's signal that it's task-queue-driven (`shoal serve`), not a plain run —
+   *  the run/swarm/strategy controls only affect a plain run, never a queued task. */
+  | {
+      type: "task_queue";
+      runningId: string | null;
+      runningTitle: string | null;
+      queueLength: number;
+      /** The most recently finished task, so the dashboard can explain an empty tank instead
+       *  of just saying "waiting for a task…" when the last one actually failed. */
+      lastTask: { id: string; title: string; status: "queued" | "running" | "done" | "failed" | "cancelled"; error?: string } | null;
+    }
   /** Strategies/personas/missions were (re)loaded from the data dir — errors keep the last good copy. */
   | {
       type: "data_status";
