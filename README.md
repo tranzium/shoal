@@ -213,7 +213,7 @@ curl -X POST http://localhost:4321/api/tasks \
 
 | Endpoint | What it does |
 |---|---|
-| `POST /api/tasks` | Queue a task — body `{ url, task, swarm?=1, strategy?, personas?, title?, login? }`. Returns `201 { id, position }`; `400` if `url`/`task` are missing or invalid |
+| `POST /api/tasks` | Queue a task — body `{ url, task, swarm?=1, strategy?, personas?, title?, login?, extension?, expect? }`. Returns `201 { id, position }`; `400` if `url`/`task` are missing or invalid |
 | `GET /api/tasks` | `{ queue, history }` — what's running/queued, and the last 50 finished |
 | `GET /api/tasks/:id` | Status (`queued`/`running`/`done`/`failed`/`cancelled`), timings, outcome |
 | `GET /api/tasks/:id/report` | The task's report as markdown; add `?format=json` for the JSON form |
@@ -242,6 +242,34 @@ real `url` or a `login` per submission instead of baking either into the YAML). 
 [`examples/missions/signup.yaml`](examples/missions/signup.yaml) and
 [`paid.yaml`](examples/missions/paid.yaml) — copy either into your data dir's `missions/` to
 try it.
+
+#### Repro mode — Chrome extensions, captured errors, a verdict
+
+For "an extension error came in, reproduce it and check the fix": pass `extension` (path to
+an unpacked extension directory) and, optionally, `expect` (text or `/regex/flags` to match
+against what gets captured):
+
+```bash
+curl -X POST http://localhost:4321/api/tasks -d '{
+  "url": "https://app.test/",
+  "task": "Open the popup and add an item to the cart",
+  "extension": "/path/to/unpacked-extension",
+  "expect": "chrome.runtime is undefined"
+}'
+```
+
+- With `extension` set, that task's agents load it via `--load-extension` (each gets its own
+  persistent browser context instead of the shared pool — extensions require one). Tasks
+  without `extension` are unaffected.
+- Every agent's page console errors, uncaught `pageerror`s, failed network requests, and the
+  extension's own service-worker console errors are captured, deduped by (source, text), and
+  merged into the task report as `## Captured browser errors`, each with a repeat count and
+  the step it first appeared on.
+- With `expect` also set, the report gets a `## Verdict`: `reproduced` (an error matched, with
+  the matching evidence lines), `not_reproduced` (nothing matched and every agent completed
+  normally), or `inconclusive` (nothing matched but an agent crashed, so the run doesn't prove
+  the bug is gone). Run once before a fix (`expect` set to the error) and once after — the
+  verdict flips from `reproduced` to `not_reproduced` when the fix lands.
 
 Notes:
 - The report is written to `shoal-report.md` / `.json` in the **working directory**, and each run overwrites the last one.
