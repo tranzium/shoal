@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { RunController } from "./runController.js";
 import { TaskQueue } from "./taskQueue.js";
 import { safeConcurrency } from "./capacity.js";
-import { hasSubscription } from "./subscriptionAuth.js";
+import { hasSubscription, credentialsError } from "./subscriptionAuth.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas, personasToYaml } from "./personaGen.js";
 import { DataStore } from "./dataStore.js";
 import { listScenes, sceneScales } from "./scenes.js";
@@ -287,8 +287,20 @@ async function serveCmd(): Promise<void> {
     process.exit(1);
   }
 
+  // A service has no terminal to refuse a bad/expired credential interactively either — so,
+  // unlike `run`/`demo`, this warns and boots anyway (the dashboard should still come up),
+  // and records the reason on /api/health. The task queue re-checks live at submission time
+  // (a subscription token rotates hourly and can expire under a long-lived service), so this
+  // boot-time check is a diagnostic, not the enforcement point.
+  const credError = credentialsError(opts.provider);
+  if (credError) {
+    console.error(`  ⚠ ${credError}`);
+    console.error("    shoal serve is booting anyway to serve the dashboard, but every submitted task will fail until this is fixed.");
+  }
+
   const controller = new RunController(opts);
   await controller.start(false); // stay in `idle` — no swarm until a restart command arrives
+  controller.shoalServer.credentialsError = credError;
   // One task at a time, FIFO: POST /api/tasks queues work, the queue runs it and returns
   // to idle before starting the next. Queue is in-memory — a restart drops anything queued.
   controller.shoalServer.tasks = new TaskQueue(controller.shoalServer, opts);

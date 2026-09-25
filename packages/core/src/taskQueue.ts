@@ -1,7 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runSwarm } from "./orchestrator.js";
 import { writeTaskReport } from "./report.js";
+import { credentialsError } from "./subscriptionAuth.js";
+import { ZERO_USAGE } from "./pricing.js";
 import type { ShoalServer } from "./server.js";
 import type { Finding, RunOptions, RunSummary } from "./types.js";
 
@@ -128,6 +130,15 @@ export class TaskQueue {
         }
       }
     }
+    // A zero-agent task (used by tests, and a legitimate "just validate the request" case)
+    // never touches the provider, so there's nothing to refuse here. A real task does — and
+    // this is checked LIVE, not just at `serve` boot, because a subscription token rotates
+    // hourly and can expire hours into a long-lived service's life.
+    if (swarm > 0) {
+      const credError = credentialsError(this.base.provider);
+      if (credError) return { ok: false, error: credError };
+    }
+
     const title = typeof body.title === "string" && body.title.trim() ? body.title.trim() : task.slice(0, 60);
     const extension = typeof body.extension === "string" && body.extension.trim() ? body.extension.trim() : undefined;
     const expect = typeof body.expect === "string" && body.expect.trim() ? body.expect.trim() : undefined;
@@ -260,6 +271,7 @@ export class TaskQueue {
     this.server.resetRunState();
     this.server.setHealth("running", this.seq);
     this.broadcastQueue();
+    const strategies = this.server.dataStore?.getStrategies().map((s) => ({ id: s.id, name: s.name }));
     this.server.broadcast({
       type: "run_state",
       phase: "running",
@@ -267,6 +279,7 @@ export class TaskQueue {
       strategy: task.strategy,
       task: task.title,
       runNumber: this.seq,
+      strategies,
     });
 
     const secrets = task.login ? [task.login.email, task.login.password].filter(Boolean) : [];
@@ -284,12 +297,19 @@ export class TaskQueue {
       open: false,
     };
 
+    // The service console stays quiet (many small tasks would otherwise flood it), but the
+    // run is no longer silent overall: every log line runSwarm would have printed is captured
+    // here and written to reports/<id>.log, so a task that hangs or fails leaves a transcript
+    // behind instead of nothing.
+    const logLines: string[] = [];
+
     try {
       await runSwarm(opts, {
         server: this.server,
         signal: task.abort.signal,
         keepAlive: true,
         quiet: true,
+        log: (line) => logLines.push(line),
         onFinding: (f) => task.findings.push(f),
         onDone: ({ findings, summary, reportPath }) => {
           task.findings = findings;
@@ -305,13 +325,50 @@ export class TaskQueue {
     } catch (err) {
       task.status = "failed";
       task.error = (err as Error).message;
+      // "Submit a task, get a report" should hold even when the task never got as far as
+      // running an agent (e.g. a credential failure that slipped past the submit-time check).
+      // Best-effort: the task's own failure is already recorded in task.error regardless.
+      try {
+        const summary: RunSummary = {
+          total: task.swarm,
+          completed: 0,
+          gaveUp: 0,
+          errored: 0,
+          durationMs: Date.now() - (task.startedAt ?? Date.now()),
+          usage: ZERO_USAGE,
+          costUsd: 0,
+        };
+        const { mdPath } = await writeTaskReport(
+          task.findings,
+          summary,
+          opts,
+          { id: task.id, title: task.title, startedAt: task.startedAt!, status: "failed", error: task.error },
+          secrets,
+        );
+        task.reportPath = mdPath;
+      } catch {
+        /* best-effort */
+      }
     } finally {
       task.finishedAt = Date.now();
       this.history.push(task);
       this.running = undefined;
+      if (logLines.length > 0) {
+        try {
+          const dir = join(process.cwd(), "reports");
+          await mkdir(dir, { recursive: true });
+          await writeFile(join(dir, `${task.id}.log`), logLines.join("\n") + "\n", "utf8");
+        } catch {
+          /* best-effort — the task's own outcome is already recorded regardless */
+        }
+      }
       if (task.status === "failed") console.log(`  ✗ task ${task.id} failed — ${task.error}`);
       else if (task.status === "cancelled") console.log(`  ⏹ task ${task.id} cancelled`);
       else console.log(`  ✓ task ${task.id} done — report: ${task.reportPath ?? "(none)"}`);
+      // The task is over — any agent still cached as queued/mid-flight (never reached, or
+      // launched but not finished when the task was aborted/failed) is stale: reconcile it
+      // to `stopped` so the tank can't show a swarm that no longer exists.
+      this.server.reconcileAgents();
       this.server.setHealth("idle", null);
       this.broadcastQueue();
       this.server.broadcast({
@@ -320,6 +377,7 @@ export class TaskQueue {
         swarm: task.swarm,
         task: "",
         runNumber: this.seq,
+        strategies,
       });
     }
   }

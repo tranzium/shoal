@@ -221,6 +221,10 @@ export class ShoalServer {
    * push 1000 JPEGs down the socket.
    */
   focusedAgentId: string | null = null;
+  /** Set by `shoal serve` at boot from a credentials preflight — surfaced on /api/health so
+   *  a monitor (or an operator) can see a task will fail before one is even submitted. The
+   *  task queue re-checks live at submit time; this is a boot-time diagnostic, not the gate. */
+  credentialsError: string | null = null;
   private startedAt = 0;
   private health: { phase: RunPhase; runId: number | null } = { phase: "idle", runId: null };
 
@@ -249,6 +253,7 @@ export class ShoalServer {
             runId: this.health.runId,
             startedAt: this.startedAt,
             uptimeMs: Date.now() - this.startedAt,
+            credentialsError: this.credentialsError,
             ...(this.dataStore ? { data: this.dataStore.health() } : {}),
           }),
         );
@@ -461,7 +466,17 @@ export class ShoalServer {
         try {
           const cmd = JSON.parse(String(raw)) as ControlCommand;
           if (cmd?.cmd === "focus") this.focusedAgentId = cmd.agentId;
-          else if (cmd?.cmd === "stop" || cmd?.cmd === "restart" || cmd?.cmd === "reload") this.onControl?.(cmd);
+          else if (cmd?.cmd === "stop" || cmd?.cmd === "restart") {
+            // The dashboard already disables these buttons in task-queue mode, but a stale
+            // tab or a direct WS client could still send one — a plain run controller command
+            // here would start/stop a swarm the task queue doesn't know about, alongside
+            // whatever task is (or isn't) actually running. Refuse server-side, not just in the UI.
+            if (this.tasks) {
+              console.log(`  ⏹  ignoring "${cmd.cmd}" — the task queue owns the run; cancel a task with DELETE /api/tasks/:id instead`);
+            } else {
+              this.onControl?.(cmd);
+            }
+          } else if (cmd?.cmd === "reload") this.onControl?.(cmd);
         } catch {
           /* ignore malformed control frames */
         }
@@ -489,6 +504,27 @@ export class ShoalServer {
       ...(this.dataStatus ? [this.dataStatus] : []),
       ...(this.taskQueueState ? [this.taskQueueState] : []),
     ];
+  }
+
+  /**
+   * Called when a run/task ends: any agent still cached in a non-terminal status (seeded as
+   * `queued` but never reached, because the run failed or was aborted before the pool got to
+   * it) is force-flipped to `stopped`. Without this, a run that dies early leaves the tank
+   * showing a swarm that no longer exists — those fish never get another state push, so
+   * they'd otherwise sit there indefinitely, and `list.length === 0` (what the empty-tank/
+   * failure UI keys off) would never become true again until the *next* run's `resetRunState`.
+   */
+  reconcileAgents(): void {
+    const stale = [...this.states.values()].filter(
+      (ev) => ev.type === "agent_state" && !["done", "gave_up", "error", "stopped"].includes(ev.state.status),
+    );
+    if (stale.length === 0) return;
+    const ts = Date.now();
+    const states = stale.map((ev) => {
+      const state = (ev as Extract<ShoalEvent, { type: "agent_state" }>).state;
+      return { ...state, status: "stopped" as const, lastThought: state.lastThought || "(run ended before this agent started)" };
+    });
+    this.broadcast({ type: "agent_batch", ts, states });
   }
 
   /** Clear per-run state (kept: nothing) so a restart shows a fresh wall. */

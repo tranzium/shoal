@@ -8,6 +8,13 @@ import { TaskQueue } from "./taskQueue.js";
 import { DataStore } from "./dataStore.js";
 import type { RunOptions } from "./types.js";
 
+// These tests exercise submit() with provider "anthropic" as a stand-in "happy path" — they
+// aren't about credentials, so give them one for the duration of this file (submit() now
+// checks live, see the "credentials" tests below for that behavior itself) and restore
+// whatever was there afterward.
+const savedAnthropicKey = process.env.ANTHROPIC_API_KEY;
+process.env.ANTHROPIC_API_KEY = savedAnthropicKey ?? "sk-test-taskqueue-fixture";
+
 /** swarm: 0 means runSwarm resolves with zero agents — no browser ever launches. */
 function baseOpts(): RunOptions {
   return {
@@ -76,8 +83,11 @@ afterAll(async () => {
     cleanupIds.flatMap((id) => [
       rm(join(process.cwd(), "reports", `${id}.md`), { force: true }),
       rm(join(process.cwd(), "reports", `${id}.json`), { force: true }),
+      rm(join(process.cwd(), "reports", `${id}.log`), { force: true }),
     ]),
   );
+  if (savedAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = savedAnthropicKey;
 });
 
 test("submit rejects a missing url or task with a 400-style error", async () => {
@@ -254,6 +264,36 @@ test("submit does not validate strategy/persona ids without a data store", async
     expect(r.ok).toBe(true);
     if (r.ok) cleanupIds.push(r.task.id);
   });
+});
+
+test("submit rejects a task when the provider has no credentials", async () => {
+  const saved = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    await withServer(async (_server, queue) => {
+      const r = queue.submit({ url: "http://x/", task: "do it", swarm: 1 });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("ANTHROPIC_API_KEY");
+    });
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = saved;
+  }
+});
+
+test("submit does not check credentials for a zero-agent task", async () => {
+  const saved = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    await withServer(async (_server, queue) => {
+      const r = queue.submit({ url: "http://x/", task: "do it", swarm: 0 });
+      expect(r.ok).toBe(true);
+      if (r.ok) cleanupIds.push(r.task.id);
+    });
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = saved;
+  }
 });
 
 test("getReport distinguishes an unknown task from one with no report yet", async () => {
