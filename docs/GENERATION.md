@@ -17,15 +17,15 @@ the built-in library uses.
 
 ```bash
 # From a product description
-npm run shoal -- personas generate \
+node packages/core/dist/cli.js personas generate \
   --audience "A B2B invoicing SaaS for freelance designers; mostly non-technical, split desktop/mobile" \
   --n 12 --out my-personas.yaml
 
 # Inferred from the live site (vision reads the landing page)
-npm run shoal -- personas generate --from-url https://your-app.test --n 12 --out my-personas.yaml
+node packages/core/dist/cli.js personas generate --from-url https://your-app.test --n 12 --out my-personas.yaml
 
 # Grounded in real analytics (see the JSON shape below)
-npm run shoal -- personas generate --from-logs ./analytics.json --n 12 --out my-personas.yaml
+node packages/core/dist/cli.js personas generate --from-logs ./analytics.json --n 12 --out my-personas.yaml
 ```
 
 The YAML is human-editable and versionable — treat a generated panel as an artifact you
@@ -35,14 +35,14 @@ refine, not a black box. Omit `--out` to print to stdout.
 
 ```bash
 # Synthesize 15 personas from a description, then swarm with them
-npm run shoal -- run https://your-app.test --generate 15 \
+node packages/core/dist/cli.js run https://your-app.test --generate 15 \
   --audience "impulse-buy streetwear store, Gen-Z, almost entirely mobile"
 
 # Let shoal infer the audience from the page itself
-npm run shoal -- run https://your-app.test --generate 15
+node packages/core/dist/cli.js run https://your-app.test --generate 15
 
 # Ground the swarm in your real logs
-npm run shoal -- run https://your-app.test --generate 15 --from-logs ./analytics.json
+node packages/core/dist/cli.js run https://your-app.test --generate 15 --from-logs ./analytics.json
 ```
 
 When the swarm is larger than the generated panel, each persona is used at least once and
