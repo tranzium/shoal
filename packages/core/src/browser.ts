@@ -1,5 +1,6 @@
 import { cpus, tmpdir } from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Page, type Worker } from "playwright";
 import type { CapturedError } from "./types.js";
@@ -7,6 +8,23 @@ import type { QaGuardEvent } from "./qa.js";
 
 export const DISPLAY_WIDTH = 1024;
 export const DISPLAY_HEIGHT = 768;
+
+/**
+ * Boot-time check for `/api/health`: does the headless shell chromium.launch() actually
+ * exist at the resolved PLAYWRIGHT_BROWSERS_PATH? Without this, a missing/misplaced install
+ * only surfaces ~100ms into the first submitted task, deep in a Playwright stack trace —
+ * calling this at `shoal serve` startup puts the same failure on /api/health instead, before
+ * anyone submits a task. Only checks the headless shell the shared pool launches (see
+ * sharedBrowser above); extension repro tasks launch the full `channel: "chromium"` build
+ * instead, which this does not cover.
+ */
+export function browserPreflightError(): string | null {
+  const execPath = chromium.executablePath();
+  if (!existsSync(execPath)) {
+    return `Chromium headless shell not found at ${execPath} — run \`npx playwright install chromium\`, or check PLAYWRIGHT_BROWSERS_PATH / --playwright-browsers-path.`;
+  }
+  return null;
+}
 
 /**
  * Launch flags with measured wins only (see docs/SCALING.md — flag-stacking beyond these
