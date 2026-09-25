@@ -1,5 +1,8 @@
-import { cpus } from "node:os";
-import { chromium, type Browser, type BrowserContext, type CDPSession, type Page } from "playwright";
+import { cpus, tmpdir } from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { chromium, type Browser, type BrowserContext, type CDPSession, type Page, type Worker } from "playwright";
+import type { CapturedError } from "./types.js";
 
 export const DISPLAY_WIDTH = 1024;
 export const DISPLAY_HEIGHT = 768;
@@ -124,20 +127,102 @@ export interface ComputerAction {
   duration?: number;
 }
 
+/**
+ * Repro mode: dedupes console/pageerror/network/extension-worker errors observed during
+ * one agent's session, so a chatty error doesn't drown the report — the report wants
+ * "this error, N times, first seen at step K", not N near-identical lines.
+ */
+class ErrorCapture {
+  private byKey = new Map<string, CapturedError>();
+  /** Set by the agent loop before each step so new errors land with the right step number. */
+  step = 0;
+
+  record(source: CapturedError["source"], text: string): void {
+    const key = `${source}:${text}`;
+    const existing = this.byKey.get(key);
+    if (existing) {
+      existing.count++;
+      return;
+    }
+    this.byKey.set(key, { source, text, count: 1, firstStep: this.step });
+  }
+
+  list(): CapturedError[] {
+    return [...this.byKey.values()];
+  }
+}
+
 export class AgentBrowser {
   private context!: BrowserContext;
   private cdp?: CDPSession;
+  private extensionUserDataDir?: string;
   page!: Page;
+  readonly errors = new ErrorCapture();
 
-  async launch(url: string, headless: boolean): Promise<void> {
-    const browser = await sharedBrowser(headless);
-    this.context = await browser.newContext({
-      viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
-      deviceScaleFactor: 1,
-      ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1",
+  /**
+   * `extensionDir`, when set, loads that unpacked extension via `--load-extension` instead
+   * of drawing a context from the shared headless pool — extensions require their own
+   * persistent context (`launchPersistentContext`), one Chromium process per agent. Repro
+   * tasks run small swarms, so the pool's per-context-creation-rate optimization doesn't
+   * apply here anyway.
+   *
+   * `channel: "chromium"` pins this to the full Chromium binary. Playwright's default
+   * headless launch (what the shared pool uses) runs `chrome-headless-shell` instead — a
+   * stripped build with no extension support — so extensions need the full binary's "new"
+   * headless mode (Chromium's own default headless behavior today), which does support them,
+   * headed or not. `timeout` is explicit (Playwright's persistent-context default is 3
+   * minutes) so a broken extension/profile fails a repro task in seconds, not minutes.
+   */
+  async launch(url: string, headless: boolean, extensionDir?: string): Promise<void> {
+    if (extensionDir) {
+      this.extensionUserDataDir = await mkdtemp(join(tmpdir(), "shoal-ext-"));
+      this.context = await chromium.launchPersistentContext(this.extensionUserDataDir, {
+        headless,
+        channel: "chromium",
+        timeout: 30000,
+        viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
+        deviceScaleFactor: 1,
+        ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1",
+        args: [
+          ...LAUNCH_ARGS.filter((a) => a !== "--disable-extensions"),
+          `--disable-extensions-except=${extensionDir}`,
+          `--load-extension=${extensionDir}`,
+        ],
+      });
+      this.page = this.context.pages()[0] ?? (await this.context.newPage());
+      const captureWorker = (worker: Worker) => {
+        if (!worker.url().startsWith("chrome-extension://")) return; // page workers are noise here
+        worker.on("console", (msg) => {
+          if (msg.type() === "error") this.errors.record("extension", msg.text());
+        });
+      };
+      this.context.on("serviceworker", captureWorker);
+      for (const w of this.context.serviceWorkers()) captureWorker(w);
+    } else {
+      const browser = await sharedBrowser(headless);
+      this.context = await browser.newContext({
+        viewport: { width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT },
+        deviceScaleFactor: 1,
+        ignoreHTTPSErrors: process.env.SHOAL_INSECURE_TLS === "1",
+      });
+      this.page = await this.context.newPage();
+    }
+
+    this.page.on("console", (msg) => {
+      if (msg.type() === "error") this.errors.record("console", msg.text());
     });
-    this.page = await this.context.newPage();
+    this.page.on("pageerror", (err) => this.errors.record("pageerror", err.message));
+    this.page.on("requestfailed", (req) => {
+      const failure = req.failure();
+      this.errors.record("network", `${req.method()} ${req.url()} — ${failure?.errorText ?? "failed"}`);
+    });
+
     await this.page.goto(url, { waitUntil: "domcontentloaded" });
+  }
+
+  /** Correlates newly captured errors with the agent's current step (docs/report: "first-seen step"). */
+  setStep(step: number): void {
+    this.errors.step = step;
   }
 
   private async lifecycle(state: "frozen" | "active"): Promise<void> {
@@ -254,5 +339,6 @@ export class AgentBrowser {
 
   async close(): Promise<void> {
     await this.context?.close().catch(() => {});
+    if (this.extensionUserDataDir) await rm(this.extensionUserDataDir, { recursive: true, force: true }).catch(() => {});
   }
 }

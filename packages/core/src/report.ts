@@ -111,10 +111,41 @@ function buildReportMd(findings: Finding[], summary: RunSummary, opts: RunOption
         `- **Outcome:** ${summary.completed} completed · ${summary.gaveUp} gave up · ${summary.errored} errored`,
       ];
 
+  const sourceLabel = { console: "console", pageerror: "page error", network: "failed request", extension: "extension" } as const;
+  const verdictLine = {
+    reproduced: "✅ **reproduced**",
+    not_reproduced: "❌ **not_reproduced**",
+    inconclusive: "❔ **inconclusive**",
+  } as const;
+
+  const reproSections = [
+    ...(summary.verdict
+      ? [
+          `## Verdict`,
+          ``,
+          `Expected: \`${opts.expect}\` → ${verdictLine[summary.verdict.status]}`,
+          ``,
+          ...(summary.verdict.evidence.length > 0 ? summary.verdict.evidence.map((e) => `- ${e}`) : []),
+          ``,
+        ]
+      : []),
+    ...(summary.capturedErrors && summary.capturedErrors.length > 0
+      ? [
+          `## Captured browser errors (${summary.capturedErrors.length})`,
+          ``,
+          ...summary.capturedErrors.map(
+            (e) => `- **[${sourceLabel[e.source]}]** ${e.text} (×${e.count}, first seen step ${e.firstStep})`,
+          ),
+          ``,
+        ]
+      : []),
+  ];
+
   return [
     ...header,
     ...costLines(summary, opts),
     ``,
+    ...reproSections,
     `## Findings (${clusters.length} issues, ${findings.length} reports${
       findings.some((f) => f.verdict)
         ? `; verify pass: ${findings.filter((f) => f.verdict?.status !== "suspect").length} confirmed, ${findings.filter((f) => f.verdict?.status === "suspect").length} suspect`

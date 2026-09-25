@@ -175,7 +175,7 @@ export async function runLlmAgent(
         await a11yBrowser.launch(opts.url, opts.headless);
         return { text: `Accessibility tree:\n${await a11yBrowser.snapshot()}` } as Observation;
       }
-      await visionBrowser!.launch(opts.url, opts.headless);
+      await visionBrowser!.launch(opts.url, opts.headless, opts.extension);
       return observe();
     });
     state.status = "browsing";
@@ -196,6 +196,7 @@ export async function runLlmAgent(
         return state;
       }
       state.step = step + 1;
+      visionBrowser?.setStep(state.step);
       state.status = "thinking";
       push();
 
@@ -311,6 +312,7 @@ export async function runLlmAgent(
     state.lastThought = `error: ${(err as Error).message}`;
     push();
   } finally {
+    if (visionBrowser) state.capturedErrors = visionBrowser.errors.list();
     await visionBrowser?.close();
     await a11yBrowser?.close();
   }

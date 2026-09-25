@@ -6,6 +6,7 @@ import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas } from "
 import { ShoalServer } from "./server.js";
 import { DataStore } from "./dataStore.js";
 import { writeReport, frictionMap } from "./report.js";
+import { mergeCapturedErrors, computeVerdict } from "./repro.js";
 import { redactFinding, redactText } from "./redact.js";
 import { verifyFindings } from "./verify.js";
 import { closeSharedBrowser, configureBrowserPool } from "./browser.js";
@@ -457,6 +458,18 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     }
   }
 
+  // Repro mode: merge each agent's deduped captures into one task-level view, and — when
+  // the task asked what to expect — turn that into a reproduced/not_reproduced/inconclusive
+  // verdict the operator can act on directly.
+  const capturedErrors = mergeCapturedErrors(states.map((s) => s.capturedErrors));
+  const verdict = opts.expect
+    ? computeVerdict(
+        opts.expect,
+        capturedErrors,
+        states.some((s) => s.status === "error"),
+      )
+    : undefined;
+
   const summary: RunSummary = {
     total: states.length,
     completed: states.filter((s) => s.status === "done").length,
@@ -465,6 +478,8 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     durationMs: Date.now() - started,
     usage,
     costUsd: opts.mock ? 0 : dollarsFor(usage),
+    capturedErrors: capturedErrors.length > 0 ? capturedErrors : undefined,
+    verdict,
   };
 
   // Evidence screenshots have served their purpose; drop them before report/broadcast.
