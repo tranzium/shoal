@@ -22,6 +22,14 @@ try {
   /* no .env here — shell environment still applies */
 }
 
+// `--playwright-browsers-path <dir>` as an alternative to the PLAYWRIGHT_BROWSERS_PATH env
+// var: some process supervisors (e.g. Warden/NSSM without AppEnvironmentExtra) can only pass
+// command-line arguments, not per-service env vars. Playwright resolves this lazily at
+// chromium.launch() rather than at import time, so setting it here — before any browser is
+// launched, however deep in the call stack that happens — is early enough.
+const playwrightBrowsersPathArg = arg("playwright-browsers-path");
+if (playwrightBrowsersPathArg) process.env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersPathArg;
+
 const HELP = `
   🐟 shoal — a swarm of AI users that attack your website
 
@@ -85,6 +93,9 @@ const HELP = `
                          of the packaged library (env: SHOAL_DATA). Missing files fall back to
                          the packaged defaults. \`shoal serve\` watches this dir and reloads on
                          edit — no restart needed; a broken YAML edit keeps the last good copy.
+    --playwright-browsers-path <dir>
+                         Same as the PLAYWRIGHT_BROWSERS_PATH env var, as a flag — for
+                         supervisors (Warden/NSSM) that can only pass arguments, not env vars.
 
   Providers & keys:
     anthropic            ANTHROPIC_API_KEY (or \`ant auth login\`) — native computer use, metered
