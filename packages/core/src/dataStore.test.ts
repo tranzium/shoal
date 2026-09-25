@@ -130,6 +130,58 @@ test("a brand-new broken mission file is skipped, not added half-formed", () => 
   expect(store.getMissionsSection().error).toContain("broken.yaml");
 });
 
+test("a mission's qa block is validated and parsed", () => {
+  const dir = tempDataDir();
+  mkdirSync(join(dir, "missions"));
+  writeFileSync(
+    join(dir, "missions", "qa-pricing.yaml"),
+    [
+      "title: QA pricing",
+      "url: https://site.test/pricing/",
+      "task: click yearly",
+      "swarm: 1",
+      "qa:",
+      "  hosts: [site.test]",
+      "  expect:",
+      "    - id: price",
+      "      kind: text",
+      "      when: start",
+      "      selector: .price",
+      "      equals: $39.99",
+    ].join("\n"),
+    "utf8",
+  );
+  const store = new DataStore(dir);
+  const mission = store.getMission("qa-pricing");
+  expect(mission?.qa?.hosts).toEqual(["site.test"]);
+  expect(mission?.qa?.expect[0].id).toBe("price");
+  expect(store.getMissionsSection().error).toBeNull();
+});
+
+test("a mission's qa.hosts must include the start URL's host", () => {
+  const dir = tempDataDir();
+  mkdirSync(join(dir, "missions"));
+  writeFileSync(
+    join(dir, "missions", "qa-bad.yaml"),
+    [
+      "title: QA bad",
+      "url: https://site.test/pricing/",
+      "task: click yearly",
+      "qa:",
+      "  hosts: [other.test]",
+      "  expect:",
+      "    - id: price",
+      "      kind: text",
+      "      when: start",
+      "      equals: $39.99",
+    ].join("\n"),
+    "utf8",
+  );
+  const store = new DataStore(dir);
+  expect(store.getMissions()).toEqual([]);
+  expect(store.getMissionsSection().error).toContain("qa.hosts must list the start URL's host");
+});
+
 test("deleting a mission file removes it on the next reload", () => {
   const dir = tempDataDir();
   const missionsDir = join(dir, "missions");

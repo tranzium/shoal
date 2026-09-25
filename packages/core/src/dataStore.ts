@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { assignFromList, getFromList, PACKAGED_STRATEGIES_PATH } from "./strategies.js";
 import { pickFromList, PACKAGED_PERSONAS_PATH } from "./personas.js";
+import { validateQaConfig } from "./qa.js";
 import type { Mission, Persona, Strategy } from "./types.js";
 
 /**
@@ -75,6 +76,13 @@ function validateMission(raw: unknown, name: string): Mission {
   if (typeof m.strategy === "string") mission.strategy = m.strategy;
   if (typeof m.swarm === "number") mission.swarm = m.swarm;
   if (Array.isArray(m.personas) && m.personas.every((p) => typeof p === "string")) mission.personas = m.personas as string[];
+  if (m.qa !== undefined) {
+    const qa = validateQaConfig(m.qa, name);
+    if (!qa.hosts.some((h) => h.toLowerCase() === new URL(m.url as string).hostname.toLowerCase())) {
+      throw new Error(`mission "${name}": qa.hosts must list the start URL's host`);
+    }
+    mission.qa = qa;
+  }
   return mission;
 }
 

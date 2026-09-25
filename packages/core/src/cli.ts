@@ -4,8 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { RunController } from "./runController.js";
 import { TaskQueue } from "./taskQueue.js";
+import { runSwarm } from "./orchestrator.js";
+import { writeQaReport } from "./report.js";
 import { safeConcurrency } from "./capacity.js";
 import { credentialsError } from "./subscriptionAuth.js";
+import { qaNeedsCredentials, exitCodeFor } from "./qa.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas, personasToYaml } from "./personaGen.js";
 import { DataStore } from "./dataStore.js";
 import { listScenes, sceneScales } from "./scenes.js";
@@ -52,6 +55,10 @@ const HELP = `
                                         dashboard runs that target; without it, stays idle
                                         until a restart command supplies one. Pass --no-open
                                         for unattended (service/Warden) use
+    shoal qa <mission> --data <dir>     Headless, code-judged QA run against a mission's answer
+      [--out <dir>]                     key (mission's \`qa:\` block — see docs/QA.md). No
+                                        dashboard; exits 0 pass, 1 fail, 2 inconclusive,
+                                        3 could not run (bad mission / missing creds).
     shoal personas generate [options]   Synthesize a persona panel and print/save it as YAML
     shoal strategies                    List the attack strategies (the second axis)
     shoal scenes                        List multi-user scenes (seller/buyer, doc, chat…)
@@ -243,6 +250,88 @@ function defaultModelAndConcurrency(
   };
 }
 
+/**
+ * `shoal qa <mission>` — headless, code-judged pass/fail against a mission's `qa` answer key.
+ * No dashboard: the swarm's port is ephemeral (0) and closed the moment the run finishes.
+ * Exit codes: 0 pass, 1 fail, 2 inconclusive, 3 could not run (bad mission, missing creds).
+ */
+async function qaCmd(missionName: string | undefined): Promise<void> {
+  if (!missionName || missionName.startsWith("--")) {
+    console.error("  shoal qa needs a mission name: shoal qa <mission> --data <dir> [--out <dir>]");
+    process.exit(3);
+  }
+  const dataDir = dataDirArg();
+  if (!dataDir) {
+    console.error("  shoal qa needs --data <dir> (or SHOAL_DATA) pointing at a missions/ directory.");
+    process.exit(3);
+  }
+  const store = new DataStore(dataDir);
+  if (store.getMissionsSection().error) {
+    console.error(`  ⚠ mission load error: ${store.getMissionsSection().error}`);
+  }
+  const mission = store.getMission(missionName);
+  if (!mission) {
+    console.error(`  ✗ unknown mission: ${missionName}`);
+    process.exit(3);
+  }
+  if (!mission.qa) {
+    console.error(`  ✗ mission "${missionName}" has no qa block — shoal qa only runs answer-keyed missions.`);
+    process.exit(3);
+  }
+
+  const provider = (arg("provider", "anthropic") as RunOptions["provider"]);
+  const swarm = mission.swarm ?? 1;
+  const { model: defaultModel } = defaultModelAndConcurrency(provider, swarm);
+  const needsCreds = qaNeedsCredentials(mission.qa);
+  if (needsCreds) {
+    const credError = credentialsError(provider);
+    if (credError) {
+      console.error(`  ✗ ${credError}`);
+      process.exit(3);
+    }
+  }
+
+  const outDir = arg("out", process.cwd())!;
+  const opts: RunOptions = {
+    url: mission.url,
+    task: mission.task,
+    swarm,
+    concurrency: Math.max(1, Math.min(swarm, Number(arg("concurrency", "3")))),
+    provider,
+    baseUrl: arg("base-url"),
+    model: arg("model", defaultModel)!,
+    effort: (arg("effort", "medium") as RunOptions["effort"]),
+    verify: false,
+    maxSteps: Number(arg("max-steps", "30")),
+    headless: true,
+    mock: false,
+    port: 0,
+    open: false,
+    dataDir,
+    qa: mission.qa,
+    qaMission: missionName,
+  };
+
+  console.error(`  🐟 shoal qa — "${missionName}" against ${opts.url}${needsCreds ? ` (${provider}:${opts.model})` : " (zero model calls)"}`);
+
+  let exitCode = exitCodeFor("could_not_run");
+  try {
+    const summary = await runSwarm(opts, {
+      keepAlive: false,
+      quiet: true,
+      log: () => {},
+      writeReport: (findings, runSummary) => writeQaReport(runSummary.qa!, findings, outDir).then((r) => r.mdPath),
+    });
+    if (summary.qa) {
+      exitCode = exitCodeFor(summary.qa.verdict);
+      console.error(`  ${summary.qa.verdict === "pass" ? "✅" : summary.qa.verdict === "fail" ? "❌" : "❔"} verdict: ${summary.qa.verdict}`);
+    }
+  } catch (err) {
+    console.error(`  ✗ shoal qa could not run: ${(err as Error).message}`);
+  }
+  process.exit(exitCode);
+}
+
 /** Builds the options `shoal serve` boots with. `--url` (or a later `restart` control
  *  command from the dashboard / task API) supplies the target; without either, serve
  *  stays idle. */
@@ -365,6 +454,10 @@ async function main() {
   if (command === "serve") {
     await serveCmd();
     return; // resident process — the server keeps it alive until SIGINT/SIGTERM
+  }
+  if (command === "qa") {
+    await qaCmd(maybeUrl); // process.exit()s with the verdict's exit code
+    return;
   }
 
   if (command !== "demo" && command !== "run") {

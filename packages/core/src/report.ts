@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { comparisonRows } from "./pricing.js";
 import { redactFinding, redactText } from "./redact.js";
-import type { Finding, FrictionCluster, RunOptions, RunSummary } from "./types.js";
+import type { Finding, FrictionCluster, QaReport, RunOptions, RunSummary } from "./types.js";
 
 /** Group near-duplicate findings (same trap hit by several agents) by normalized title words. */
 export function clusterFindings(
@@ -250,5 +250,91 @@ export async function writeTaskReport(
     ),
     "utf8",
   );
+  return { mdPath, jsonPath };
+}
+
+function qaTimestamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function buildQaReportMd(report: QaReport, findings: Finding[]): string {
+  const verdictLine = { pass: "✅ **pass**", fail: "❌ **fail**", inconclusive: "❔ **inconclusive**" } as const;
+  const statusIcon = { pass: "✅", fail: "❌", not_reached: "❔" } as const;
+  return [
+    `# 🐟 Shoal QA report — ${report.mission}`,
+    ``,
+    `- **Target:** ${report.url}`,
+    `- **Model:** ${report.model ?? "(none — zero model calls)"}`,
+    `- **Repeats:** ${report.repeats}`,
+    `- **Started:** ${new Date(report.startedAt).toISOString()}`,
+    `- **Finished:** ${new Date(report.finishedAt).toISOString()}`,
+    `- **Verdict:** ${verdictLine[report.verdict]}`,
+    ``,
+    `## Expectations (${report.expectations.length})`,
+    ``,
+    ...report.expectations.map((e) => {
+      const evidence = e.evidence?.url
+        ? ` — evidence: ${e.evidence.url}${e.evidence.screenshot ? ` (${e.evidence.screenshot})` : ""}`
+        : "";
+      return `- ${statusIcon[e.status]} **${e.id}** (${e.kind}${e.gradedBy === "judge" ? ", judge" : ""}) — expected ${e.expected}${
+        e.actual !== undefined ? `, actual "${e.actual}"` : ""
+      }${evidence}`;
+    }),
+    ``,
+    `## Guards`,
+    ``,
+    ...report.guards.map((g) => `- ${g.status === "pass" ? "✅" : "❌"} **${g.kind}**${g.items.length ? `: ${g.items.join("; ")}` : ""}`),
+    ...(report.blockedNavigations.length > 0
+      ? [``, `## Blocked navigations (${report.blockedNavigations.length})`, ``, ...report.blockedNavigations.map((u) => `- ${u}`)]
+      : []),
+    ...(findings.length > 0
+      ? [
+          ``,
+          `## Navigator findings (${findings.length}, not graded)`,
+          ``,
+          ...findings.map((f) => `- **[${f.severity}]** ${f.title} — ${f.description}`),
+        ]
+      : []),
+  ].join("\n");
+}
+
+/**
+ * `shoal qa`'s own report shape (Requirements §3) — deliberately not `writeTaskReport`'s
+ * findings/summary format: `{mission, url, model, repeats, verdict, expectations, guards, ...}`.
+ * Evidence screenshots are written as sibling JPEGs and the JSON points at their file paths
+ * instead of carrying base64 blobs.
+ */
+export async function writeQaReport(
+  report: QaReport,
+  findings: Finding[],
+  outDir: string = process.cwd(),
+  secrets: string[] = [],
+): Promise<{ mdPath: string; jsonPath: string }> {
+  const safeFindings = secrets.length ? findings.map((f) => redactFinding(f, secrets)) : findings;
+  const dir = join(outDir, "reports");
+  await mkdir(dir, { recursive: true });
+  const base = `qa-${report.mission}-${qaTimestamp(new Date(report.finishedAt))}`;
+  const evidenceDir = join(dir, `${base}-evidence`);
+
+  const withEvidence = report.expectations.filter((e) => e.evidence?.screenshot);
+  if (withEvidence.length > 0) {
+    await mkdir(evidenceDir, { recursive: true });
+    await Promise.all(
+      withEvidence.map((e) => writeFile(join(evidenceDir, `${e.id}.jpg`), Buffer.from(e.evidence!.screenshot!, "base64"))),
+    );
+  }
+  // Rewrite the JSON/md to point at the saved file, not the base64 blob.
+  const fileReport: QaReport = {
+    ...report,
+    expectations: report.expectations.map((e) =>
+      e.evidence?.screenshot ? { ...e, evidence: { ...e.evidence, screenshot: `${base}-evidence/${e.id}.jpg` } } : e,
+    ),
+  };
+
+  const mdPath = join(dir, `${base}.md`);
+  const jsonPath = join(dir, `${base}.json`);
+  await writeFile(mdPath, buildQaReportMd(fileReport, safeFindings), "utf8");
+  await writeFile(jsonPath, JSON.stringify({ ...fileReport, findings: safeFindings }, null, 2), "utf8");
   return { mdPath, jsonPath };
 }

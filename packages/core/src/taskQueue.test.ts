@@ -296,6 +296,34 @@ test("submit does not check credentials for a zero-agent task", async () => {
   }
 });
 
+test("submit accepts a start-only qa mission with no model creds, and its report carries the qa block", async () => {
+  const saved = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    await withMissionServer(
+      {
+        "qa-check":
+          "title: QA Check\nurl: https://x.test/\ntask: check start state\nswarm: 0\nqa:\n  hosts: [x.test]\n  expect:\n    - id: home\n      kind: url\n      when: start\n      equals: /\n",
+      },
+      async (_server, queue) => {
+        const r = queue.submit({ mission: "qa-check" });
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        cleanupIds.push(r.task.id);
+        await waitFor(() => queue.get(r.task.id)?.status === "done");
+        const t = queue.get(r.task.id)!;
+        expect(t.qaVerdict).toBeDefined();
+        const report = await queue.getReport(r.task.id);
+        expect(report.ok).toBe(true);
+        if (report.ok) expect((report.json as { summary: { qa: unknown } }).summary.qa).toBeTruthy();
+      },
+    );
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = saved;
+  }
+});
+
 test("getReport distinguishes an unknown task from one with no report yet", async () => {
   await withServer(async (_server, queue) => {
     const unknown = await queue.getReport("nope");
