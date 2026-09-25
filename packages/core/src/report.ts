@@ -139,6 +139,19 @@ function buildReportMd(findings: Finding[], summary: RunSummary, opts: RunOption
           ``,
         ]
       : []),
+    ...(summary.inboxDeliveries && summary.inboxDeliveries.length > 0
+      ? [
+          `## Inbox delivery (testmail.app)`,
+          ``,
+          ...summary.inboxDeliveries.map(
+            (d) =>
+              `- ${d.delivered ? "✅" : "❌"} **${d.personaName}** (${d.address})${
+                d.delivered ? ` — mail arrived in ${((d.deliveryMs ?? 0) / 1000).toFixed(1)}s` : " — no mail arrived within the wait window"
+              }`,
+          ),
+          ``,
+        ]
+      : []),
   ];
 
   return [

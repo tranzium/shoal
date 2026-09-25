@@ -227,6 +227,36 @@ WebSocket event, even if an agent narrates it back.
 The queue is **in-memory only**: restarting `shoal serve` drops anything still queued or
 mid-run (finished tasks' reports on disk survive, since those are just files).
 
+#### Sign-up codes and magic links — testmail.app
+
+When a task asks personas to register a new account, shoal can hand each of them a real,
+disposable email address and let them read back whatever the target site sends to it — a
+verification code or a magic link — without any human touching a mailbox.
+
+Sign up for a free plan at [testmail.app](https://testmail.app) (100 emails/month), then set:
+
+```
+SHOAL_TESTMAIL_NAMESPACE=<your namespace>
+SHOAL_TESTMAIL_API_KEY=<your api key>
+```
+
+Both are read from the environment (or `.env`) at startup — the feature is **off** (no address
+handed out, no extra tool offered) unless both are set. With both set, every agent in a run
+gets its own address, `<namespace>.<run id>.<persona index>@inbox.testmail.app`, injected into
+its system prompt the same out-of-band way `login.email` is (`agent.ts`'s `systemPrompt`) —
+for sign-up only, never for signing in with existing credentials.
+
+Agents also get a new `check_inbox` tool. It waits up to 60 seconds for mail addressed to that
+agent since the run started, and returns the subject, the first 4-8 digit code and the first
+`https://` link found in the body, plus a trimmed excerpt. It never sends or deletes mail.
+
+The run report records which personas actually received mail and how long delivery took, under
+`## Inbox delivery (testmail.app)` — delivery time is itself a product signal worth watching.
+
+The API key is added to the run's secret-redaction list alongside any `login` password, so it
+never appears in a log line, report, or WebSocket event, even if an agent narrates it back.
+Keep the free plan's 100 emails/month cap in mind — each persona in a run uses at most one.
+
 A task can also be submitted by mission name instead of spelling out `url`/`task`:
 
 ```bash

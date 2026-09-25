@@ -1,4 +1,5 @@
 import { AgentBrowser } from "./browser.js";
+import { extractCode, extractLink } from "./testmail.js";
 import type { AgentState, Finding, Persona, RunOptions } from "./types.js";
 import type { AgentCallbacks, AgentContext } from "./agent.js";
 
@@ -265,6 +266,25 @@ export async function runMockAgent(
     }
     state.status = "browsing";
     push();
+
+    // Dry-demo path for the testmail.app inbox: mock mode never calls the real API (no
+    // real emails, no free-plan quota spent), but a canned sample body proves the same
+    // extractCode/extractLink path that a real agent's check_inbox tool exercises live.
+    if (ctx.testmail) {
+      state.status = "thinking";
+      state.lastThought = `Signing up with ${ctx.testmail.address}`;
+      cb.onThought(state.lastThought);
+      push();
+      await new Promise((r) => setTimeout(r, 500));
+      const sample = "Your verification code is 482913. Or click https://example.com/verify?t=abc123 to confirm instantly.";
+      const code = extractCode(sample);
+      const link = extractLink(sample);
+      state.lastThought = `Inbox: code ${code}, link ${link}`;
+      cb.onThought(state.lastThought);
+      cb.onInboxCheck?.({ agentId, personaName: persona.name, address: ctx.testmail.address, delivered: true, deliveryMs: 1200 });
+      push();
+      await new Promise((r) => setTimeout(r, 500));
+    }
 
     for (const step of script) {
       if (ctx.signal?.aborted) {

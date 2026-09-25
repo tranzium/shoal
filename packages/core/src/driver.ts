@@ -129,3 +129,15 @@ export const AWAIT_SCHEMA = {
   required: ["event"],
   additionalProperties: false,
 };
+
+/** Offered only when this agent has a testmail.app sign-up address (see agent.ts's AgentContext.testmail). */
+export const CHECK_INBOX_TOOL_NAME = "check_inbox";
+export const CHECK_INBOX_DESCRIPTION =
+  "Check the inbox for the sign-up email address you were given. Waits for the verification " +
+  "email to arrive (up to a configured timeout) and returns its subject, any verification code, " +
+  "any link, and a trimmed body. Call this right after signing up, not before.";
+export const CHECK_INBOX_SCHEMA = {
+  type: "object" as const,
+  properties: {},
+  additionalProperties: false,
+};

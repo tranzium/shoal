@@ -115,6 +115,16 @@ export interface CapturedError {
 /** Task-level repro verdict: did the swarm's captured errors match `RunOptions.expect`? */
 export type ReproVerdict = "reproduced" | "not_reproduced" | "inconclusive";
 
+/** One persona's testmail.app inbox outcome — did mail arrive, and how long did it take. */
+export interface InboxDelivery {
+  agentId: string;
+  personaName: string;
+  address: string;
+  delivered: boolean;
+  /** Only set when delivered — time from run start to the email showing up. */
+  deliveryMs?: number;
+}
+
 export interface TokenUsage {
   input: number;
   output: number;
@@ -206,6 +216,8 @@ export interface RunSummary {
   capturedErrors?: CapturedError[];
   /** Repro mode: set when `RunOptions.expect` was provided. */
   verdict?: { status: ReproVerdict; evidence: string[] };
+  /** testmail.app: which personas got a sign-up address, whether mail arrived, and delivery time. */
+  inboxDeliveries?: InboxDelivery[];
 }
 
 export interface RunOptions {

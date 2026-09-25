@@ -11,6 +11,9 @@ import {
   RESULT_SCHEMA,
   SIGNAL_SCHEMA,
   AWAIT_SCHEMA,
+  CHECK_INBOX_TOOL_NAME,
+  CHECK_INBOX_DESCRIPTION,
+  CHECK_INBOX_SCHEMA,
   type AgentDriver,
   type ModelTurn,
   type Observation,
@@ -67,6 +70,7 @@ export class AnthropicDriver implements AgentDriver {
     private opts: RunOptions,
     private modality: "vision" | "a11y" = "vision",
     private withScene = false,
+    private withInbox = false,
   ) {
     if (opts.provider === "subscription") {
       // Drive on the Claude Code Pro/Max token: bearer auth + the OAuth beta header,
@@ -101,6 +105,9 @@ export class AnthropicDriver implements AgentDriver {
             { name: "signal", description: "Tell the other user something happened.", input_schema: SIGNAL_SCHEMA, strict: true },
             { name: "await_signal", description: "Pause until the other user signals an event.", input_schema: AWAIT_SCHEMA, strict: true },
           ]
+        : []),
+      ...(this.withInbox
+        ? [{ name: CHECK_INBOX_TOOL_NAME, description: CHECK_INBOX_DESCRIPTION, input_schema: CHECK_INBOX_SCHEMA, strict: true }]
         : []),
     ] as Anthropic.Beta.BetaToolUnion[];
     // Cache breakpoint #1 — the tool definitions. Identical for every agent in the swarm,
