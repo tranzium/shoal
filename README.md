@@ -318,7 +318,7 @@ curl -X POST http://localhost:4321/api/tasks -d '{
 Notes:
 - The report is written to `shoal-report.md` / `.json` in the **working directory**, and each run overwrites the last one.
 - `.env` in the working directory is loaded at startup (API keys, `SHOAL_INSECURE_TLS`).
-- `--provider subscription` reads `~/.claude/.credentials.json`, so run the service as the user who is logged in to Claude Code.
+- `--provider subscription` reads `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR/.credentials.json`, matching Claude Code's own resolution), so run the service as the user who is logged in to Claude Code. If that's not possible (e.g. a Warden/NSSM service account), point at the right file with `--claude-credentials <path>` / `SHOAL_CLAUDE_CREDENTIALS` instead — see the Warden section below.
 - Shutdown: Ctrl+C / SIGINT (and SIGBREAK on Windows) stops any running swarm, closes the browsers, and exits 0. An external SIGTERM on Windows is a hard kill regardless of the handler — that's Node's documented platform behavior, not a bug here.
 - The dashboard has no authentication. Anyone who can reach the port can start a swarm on your credentials.
 
@@ -394,6 +394,18 @@ real process either way.
   setup needs (API keys, `SHOAL_INSECURE_TLS`, ...) still needs a real env var or `.env` — only
   the browsers path has a CLI-flag escape hatch, since that's the one Playwright itself reads
   outside the app's own option parsing.
+- **`--claude-credentials <path>`** — needed for `--provider subscription` whenever the
+  service account is not the one logged in to Claude Code (the common case for a dedicated
+  Warden/NSSM service user). `homedir()` resolves to the *service account's* home, not yours,
+  so without this flag shoal looks for `C:\Users\<service-account>\.claude\.credentials.json`
+  and fails with a "no logged-in session" error even though you're logged in elsewhere. Point
+  it at your own `C:\Users\<you>\.claude\.credentials.json` and grant the service account
+  read access to that file (or the whole `.claude` directory, with inheritance — Claude Code
+  replaces the file on every token refresh, and a grant on the old file alone won't carry
+  over). `SHOAL_CLAUDE_CREDENTIALS` is the equivalent env var, for supervisors that can set
+  per-service environment variables instead of flags. Either way the token still only stays
+  fresh while Claude Code runs under the account that owns it — for truly unattended use,
+  prefer `--provider anthropic` with an API key.
 - **`--host 127.172.0.4 --port 80`** binds the dashboard to one specific address instead of
   every interface — the shape you want when a hostname (below) is expected to resolve to
   exactly this service and nothing else on the box.
