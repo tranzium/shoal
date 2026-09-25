@@ -123,10 +123,6 @@ export async function runLlmAgent(
   // subscription + anthropic both use the Anthropic driver (auth differs internally).
   const withScene = Boolean(ctx.sceneRole && ctx.rendezvous);
   const withInbox = Boolean(ctx.testmail);
-  const driver: AgentDriver =
-    opts.provider === "openai"
-      ? new OpenAIDriver(opts, modality, withScene, withInbox)
-      : new AnthropicDriver(opts, modality, withScene, withInbox);
 
   const visionBrowser = modality === "vision" ? new AgentBrowser() : null;
   const a11yBrowser = modality === "a11y" ? new A11yBrowser() : null;
@@ -176,12 +172,25 @@ export async function runLlmAgent(
   };
 
   try {
+    // Announce pickup immediately — before this, a fish seeded as "queued" is indistinguishable
+    // from one that's genuinely stuck. Pushing "starting" here, before the driver is constructed
+    // or the browser launches, means a credential failure (below) surfaces as a visible error
+    // fish instead of leaving the queued seed frozen forever.
+    push();
     if (ctx.signal?.aborted) {
       state.status = "stopped";
       state.lastThought = "(stopped by operator)";
       push();
       return state;
     }
+    // Constructed inside the try, not at the top of the function: a missing/expired
+    // credential (e.g. AnthropicDriver's subscription-token check) then lands in the catch
+    // below like any other agent failure — a visible "error" fish with the message — instead
+    // of rejecting out of this function entirely and killing the whole swarm silently.
+    const driver: AgentDriver =
+      opts.provider === "openai"
+        ? new OpenAIDriver(opts, modality, withScene, withInbox)
+        : new AnthropicDriver(opts, modality, withScene, withInbox);
     const first = await gated(async () => {
       if (a11yBrowser) {
         await a11yBrowser.launch(opts.url, opts.headless);
