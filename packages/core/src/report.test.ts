@@ -87,6 +87,28 @@ test("writeTaskReport writes reports/<id>.md and reports/<id>.json with the requ
   expect(json.summary.total).toBe(1);
 });
 
+test("writeTaskReport records a failure's status and error in both the markdown and JSON report", async () => {
+  const id = "test-report-failed";
+  cleanupIds.push(id);
+  const meta = {
+    id,
+    title: "Broken run",
+    startedAt: Date.now() - 2000,
+    finishedAt: Date.now(),
+    status: "failed" as const,
+    error: "No ANTHROPIC_API_KEY found.",
+  };
+  const failedSummary: RunSummary = { ...summary(), total: 0, completed: 0 };
+  const { mdPath, jsonPath } = await writeTaskReport([], failedSummary, opts(), meta);
+
+  const md = await readFile(mdPath, "utf8");
+  expect(md).toContain("**Status:** failed — No ANTHROPIC_API_KEY found.");
+
+  const json = JSON.parse(await readFile(jsonPath, "utf8"));
+  expect(json.status).toBe("failed");
+  expect(json.error).toBe("No ANTHROPIC_API_KEY found.");
+});
+
 test("writeTaskReport redacts a supplied secret from both the markdown and JSON report", async () => {
   const id = "test-report-2";
   cleanupIds.push(id);
