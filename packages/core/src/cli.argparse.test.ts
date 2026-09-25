@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { arg, args, serveOpts } from "./cli.js";
+import { arg, args, serveOpts } from "./cliMain.js";
 
 const originalArgv = process.argv;
 

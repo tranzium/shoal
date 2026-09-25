@@ -225,6 +225,9 @@ export class ShoalServer {
    *  a monitor (or an operator) can see a task will fail before one is even submitted. The
    *  task queue re-checks live at submit time; this is a boot-time diagnostic, not the gate. */
   credentialsError: string | null = null;
+  /** Set by `shoal serve` at boot from browser.ts's browserPreflightError() — same idea as
+   *  credentialsError, but for a missing/misplaced Chromium install. */
+  browserError: string | null = null;
   private startedAt = 0;
   private health: { phase: RunPhase; runId: number | null } = { phase: "idle", runId: null };
 
@@ -254,6 +257,7 @@ export class ShoalServer {
             startedAt: this.startedAt,
             uptimeMs: Date.now() - this.startedAt,
             credentialsError: this.credentialsError,
+            browserError: this.browserError,
             ...(this.dataStore ? { data: this.dataStore.health() } : {}),
           }),
         );

@@ -46,6 +46,21 @@ test("/api/health reports credentialsError null by default, and whatever `serve`
   }
 });
 
+test("/api/health reports browserError null by default, and whatever `serve` set it to", async () => {
+  const server = new ShoalServer();
+  await server.start(0);
+  try {
+    const before = await (await fetch(`http://localhost:${server.port}/api/health`)).json();
+    expect(before.browserError).toBeNull();
+
+    server.browserError = "Chromium headless shell not found at /nope — run `npx playwright install chromium`.";
+    const after = await (await fetch(`http://localhost:${server.port}/api/health`)).json();
+    expect(after.browserError).toBe("Chromium headless shell not found at /nope — run `npx playwright install chromium`.");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("reconcileAgents flips any cached agent still mid-flight to stopped", async () => {
   const server = new ShoalServer();
   await server.start(0);
