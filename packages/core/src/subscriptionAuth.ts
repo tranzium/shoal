@@ -63,3 +63,23 @@ export function hasSubscription(): boolean {
     return false;
   }
 }
+
+/**
+ * Whether the given provider can actually run right now — same checks `shoal run`/`demo`
+ * already gate on in `main()`, factored out so `shoal serve` (which has no terminal to
+ * refuse a task at) and the task queue (which re-checks per submission, since a subscription
+ * token rotates hourly and can expire under a long-lived service) can both use them.
+ * Returns a human-readable reason, or null when the provider is ready.
+ */
+export function credentialsError(provider: "anthropic" | "openai" | "subscription"): string | null {
+  if (provider === "anthropic" && !(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)) {
+    return "No ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN / ant profile) found. On a Claude Pro/Max plan, use --provider subscription instead.";
+  }
+  if (provider === "openai" && !(process.env.OPENAI_API_KEY || process.env.SHOAL_OPENAI_API_KEY)) {
+    return "--provider openai needs OPENAI_API_KEY (or SHOAL_OPENAI_API_KEY).";
+  }
+  if (provider === "subscription" && !hasSubscription()) {
+    return "--provider subscription needs a logged-in Claude Code (Pro/Max) session — run any Claude Code command (or /login) to refresh it, then retry.";
+  }
+  return null;
+}

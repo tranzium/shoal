@@ -83,6 +83,11 @@ interface ReportMeta {
   title: string;
   startedAt: number;
   finishedAt: number;
+  /** Set when the task didn't finish normally — a report exists even for a failed/cancelled
+   *  task, so "submit a task, get a report" holds unconditionally instead of leaving nothing
+   *  on disk for the one case an operator most needs to inspect. */
+  status?: "failed" | "cancelled";
+  error?: string;
 }
 
 function buildReportMd(findings: Finding[], summary: RunSummary, opts: RunOptions, meta?: ReportMeta): string {
@@ -101,6 +106,7 @@ function buildReportMd(findings: Finding[], summary: RunSummary, opts: RunOption
         `- **Started:** ${new Date(meta.startedAt).toISOString()}`,
         `- **Finished:** ${new Date(meta.finishedAt).toISOString()}`,
         `- **Outcome:** ${summary.completed} completed · ${summary.gaveUp} gave up · ${summary.errored} errored`,
+        ...(meta.status ? [`- **Status:** ${meta.status}${meta.error ? ` — ${meta.error}` : ""}`] : []),
       ]
     : [
         `# 🐟 Shoal swarm report`,
@@ -203,15 +209,23 @@ export async function writeTaskReport(
   findings: Finding[],
   summary: RunSummary,
   opts: RunOptions,
-  meta: { id: string; title: string; startedAt: number; finishedAt?: number },
+  meta: { id: string; title: string; startedAt: number; finishedAt?: number; status?: "failed" | "cancelled"; error?: string },
   secrets: string[] = [],
 ): Promise<{ mdPath: string; jsonPath: string }> {
   const finishedAt = meta.finishedAt ?? Date.now();
   const safeFindings = secrets.length ? findings.map((f) => redactFinding(f, secrets)) : findings;
   const safeOpts: RunOptions = secrets.length ? { ...opts, task: redactText(opts.task, secrets) } : opts;
   const safeTitle = secrets.length ? redactText(meta.title, secrets) : meta.title;
+  const safeError = meta.error && secrets.length ? redactText(meta.error, secrets) : meta.error;
 
-  const md = buildReportMd(safeFindings, summary, safeOpts, { id: meta.id, title: safeTitle, startedAt: meta.startedAt, finishedAt });
+  const md = buildReportMd(safeFindings, summary, safeOpts, {
+    id: meta.id,
+    title: safeTitle,
+    startedAt: meta.startedAt,
+    finishedAt,
+    status: meta.status,
+    error: safeError,
+  });
   const dir = join(process.cwd(), "reports");
   await mkdir(dir, { recursive: true });
   const mdPath = join(dir, `${meta.id}.md`);
@@ -225,6 +239,8 @@ export async function writeTaskReport(
         title: safeTitle,
         startedAt: meta.startedAt,
         finishedAt,
+        status: meta.status,
+        error: safeError,
         summary,
         clusters: clusterFindings(safeFindings),
         findings: safeFindings,

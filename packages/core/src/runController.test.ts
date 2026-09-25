@@ -80,6 +80,36 @@ test("--data threads through: a custom strategies.yaml is what the swarm and /ap
   }
 });
 
+test("onDataChange does not reassert run phase once a task queue is attached", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "shoal-rc-data-"));
+  const path = join(dir, "strategies.yaml");
+  writeFileSync(path, "strategies:\n  - id: a\n    name: A\n    directive: d\n", "utf8");
+  const rc = new RunController({ ...testOpts(), dataDir: dir });
+  await rc.start(false);
+  try {
+    const controller = rc as unknown as {
+      server: { port: number; tasks: unknown; setHealth: (phase: string, runId: number | null) => void };
+      handle: (cmd: { cmd: "reload" }) => Promise<void>;
+    };
+    // Simulate `shoal serve`'s TaskQueue attachment and a task genuinely running — the
+    // task queue, not this controller, owns phase/health once that's true.
+    controller.server.tasks = {};
+    controller.server.setHealth("running", 7);
+
+    writeFileSync(path, "strategies:\n  - id: b\n    name: B\n    directive: d\n", "utf8");
+    await controller.handle({ cmd: "reload" });
+
+    const res = await fetch(`http://localhost:${controller.server.port}/api/health`);
+    const body = await res.json();
+    // Before the fix, onDataChange's broadcastState() would stomp this back to idle/null.
+    expect(body.phase).toBe("running");
+    expect(body.runId).toBe(7);
+  } finally {
+    await rc.shutdown();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a WS 'reload' control command re-reads the data dir without touching run phase", async () => {
   const dir = mkdtempSync(join(tmpdir(), "shoal-rc-data-"));
   const path = join(dir, "strategies.yaml");

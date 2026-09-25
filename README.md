@@ -190,12 +190,18 @@ node packages/core/dist/cli.js serve --port 4340 --no-open \
 | `--allow-domain <d>`, `--yes` | — | Same non-local-target policy as `run`, but checked once at startup and never prompts — refuses to start instead (a service has no terminal) |
 | `--data <dir>` | packaged library | As `run` — and for `serve` specifically, this directory is **watched and reloaded live** (see below) |
 
-Health probe: `GET /api/health` → `{ "phase": "idle"|"running"|"stopping", "runId": n|null, "startedAt": ms, "uptimeMs": ms, "data": { "strategiesError": string|null, "personasError": string|null, "missionsError": string|null } }`.
+Health probe: `GET /api/health` → `{ "phase": "idle"|"running"|"stopping", "runId": n|null, "startedAt": ms, "uptimeMs": ms, "credentialsError": string|null, "data": { "strategiesError": string|null, "personasError": string|null, "missionsError": string|null } }`.
 `phase` reports `idle` again once a run finishes (ready for the next restart) even though
 the dashboard itself keeps showing the finished report until you trigger another run.
 The `data` block is only present once a data store is attached (always true under `serve`);
 a non-null error means the *last* edit failed to parse and the previous good copy is still
 what's actually loaded — see "Live data — strategies, personas, missions" below.
+`credentialsError` is a **boot-time** preflight (e.g. no `ANTHROPIC_API_KEY` for the chosen
+`--provider`) — `serve` warns and boots anyway rather than exiting, since the dashboard
+should still come up. It's a diagnostic, not the enforcement point: every `POST /api/tasks`
+re-checks live (a `--provider subscription` token rotates hourly and can expire hours into a
+long-lived service, long after this field was last true), and refuses the task with a 400
+naming the problem before any agent runs.
 
 ### Task intake — `POST /api/tasks`
 
@@ -210,15 +216,26 @@ curl -X POST http://localhost:4321/api/tasks \
 
 | Endpoint | What it does |
 |---|---|
-| `POST /api/tasks` | Queue a task — body `{ url, task, swarm?=1, strategy?, personas?, title?, login?, extension?, expect? }`. Returns `201 { id, position }`; `400` if `url`/`task` are missing or invalid |
+| `POST /api/tasks` | Queue a task — body `{ url, task, swarm?=1, strategy?, personas?, title?, login?, extension?, expect? }`. Returns `201 { id, position }`; `400` if `url`/`task` are missing or invalid, or if the configured provider has no credentials right now (a swarm of 0 skips that check — nothing would run anyway) |
 | `GET /api/tasks` | `{ queue, history }` — what's running/queued, and the last 50 finished |
 | `GET /api/tasks/:id` | Status (`queued`/`running`/`done`/`failed`/`cancelled`), timings, outcome |
-| `GET /api/tasks/:id/report` | The task's report as markdown; add `?format=json` for the JSON form |
+| `GET /api/tasks/:id/report` | The task's report — markdown by default, or `?format=json`. `404` if the id is unknown (never existed, or lost to a restart); `409 { status, error }` if the task exists but hasn't produced a report yet (still `queued`/`running`, or ended `cancelled` with nothing written) |
 | `DELETE /api/tasks/:id` | Cancels a queued task, or aborts one already running |
+
+**Polling contract:** poll `GET /api/tasks/:id` until `status` is terminal
+(`done`/`failed`/`cancelled`), then fetch the report. Don't poll `/report` to infer whether a
+task is still alive — a `404` there is ambiguous (unknown id vs. simply not ready yet) on
+older behavior, and even now it can't distinguish "still running" from "gave up 30 seconds
+ago" the way `GET /api/tasks/:id`'s `status` field can.
 
 Tasks run **one at a time, FIFO** — the server returns to idle between them. Each task gets
 its own `reports/<id>.md` + `reports/<id>.json` (gitignored), so nothing gets overwritten by
-the next task the way `shoal run`'s shared `shoal-report.md` would be.
+the next task the way `shoal run`'s shared `shoal-report.md` would be. This holds even for a
+task that never got as far as running an agent (e.g. a credential failure) — the report's
+header carries a `- **Status:** failed — <reason>` line instead of no file existing at all.
+Each task also gets `reports/<id>.log` (gitignored) — the full run transcript (per-agent
+thoughts, actions, findings) that the service console itself stays quiet about, so a task
+that hung or failed still leaves something to read afterward.
 
 An optional `login: { email, password }` is handed to the agent out-of-band — appended to
 its system prompt, never to the task text — and redacted from every report, log line, and
