@@ -146,6 +146,17 @@ h2.section, aside h2, .phase, .badge, .ctrl-field, .pill { font-family: var(--pi
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   color: var(--dim); pointer-events: none; font-size: 1.1rem;
 }
+.tank-idle-failed { text-align: center; color: var(--red); font-size: 1rem; }
+.tank-idle-error {
+  margin-top: 6px; color: var(--dim); font-size: 0.75rem; max-width: 60ch;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+.data-error-banner {
+  padding: 8px 18px; font-size: 11px; color: var(--red);
+  background: var(--card); border-bottom: 2px solid var(--red);
+}
+.data-error-banner span { margin-left: 10px; }
 
 /* drill-down: a paper card floating on the dark water */
 .drilldown {
