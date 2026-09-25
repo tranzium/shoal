@@ -9,6 +9,9 @@ import {
   RESULT_SCHEMA,
   SIGNAL_SCHEMA,
   AWAIT_SCHEMA,
+  CHECK_INBOX_TOOL_NAME,
+  CHECK_INBOX_DESCRIPTION,
+  CHECK_INBOX_SCHEMA,
   type AgentDriver,
   type ModelTurn,
   type Observation,
@@ -73,7 +76,7 @@ const A11Y_TOOL = {
   function: { name: A11Y_TOOL_NAME, description: A11Y_TOOL_DESCRIPTION, parameters: A11Y_TOOL_SCHEMA },
 };
 
-const toolsFor = (modality: "vision" | "a11y", withScene: boolean) => [
+const toolsFor = (modality: "vision" | "a11y", withScene: boolean, withInbox: boolean) => [
   modality === "a11y" ? A11Y_TOOL : COMPUTER_TOOL,
   { type: "function", function: { name: "report_finding", description: FINDING_DESCRIPTION, parameters: FINDING_SCHEMA } },
   { type: "function", function: { name: "task_result", description: RESULT_DESCRIPTION, parameters: RESULT_SCHEMA } },
@@ -82,6 +85,9 @@ const toolsFor = (modality: "vision" | "a11y", withScene: boolean) => [
         { type: "function", function: { name: "signal", description: "Tell the other user something happened.", parameters: SIGNAL_SCHEMA } },
         { type: "function", function: { name: "await_signal", description: "Pause until the other user signals an event.", parameters: AWAIT_SCHEMA } },
       ]
+    : []),
+  ...(withInbox
+    ? [{ type: "function", function: { name: CHECK_INBOX_TOOL_NAME, description: CHECK_INBOX_DESCRIPTION, parameters: CHECK_INBOX_SCHEMA } }]
     : []),
 ];
 
@@ -111,6 +117,7 @@ export class OpenAIDriver implements AgentDriver {
     private opts: RunOptions,
     private modality: "vision" | "a11y" = "vision",
     private withScene = false,
+    private withInbox = false,
   ) {
     this.baseUrl = (opts.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
     this.apiKey = process.env.SHOAL_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
@@ -170,7 +177,7 @@ export class OpenAIDriver implements AgentDriver {
         model: this.opts.model,
         max_tokens: 2048,
         messages: this.messages,
-        tools: toolsFor(this.modality, this.withScene),
+        tools: toolsFor(this.modality, this.withScene, this.withInbox),
         tool_choice: "auto",
       }),
     });

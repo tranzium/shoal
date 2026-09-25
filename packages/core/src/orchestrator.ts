@@ -9,6 +9,7 @@ import { writeReport, frictionMap } from "./report.js";
 import { mergeCapturedErrors, computeVerdict } from "./repro.js";
 import { redactFinding, redactText } from "./redact.js";
 import { verifyFindings } from "./verify.js";
+import { testmailConfigFromEnv, buildTag, addressFor } from "./testmail.js";
 import { closeSharedBrowser, configureBrowserPool } from "./browser.js";
 import { closeSharedA11yBrowser } from "./a11yBrowser.js";
 import { Barrier } from "./barrier.js";
@@ -18,7 +19,7 @@ import { Rendezvous } from "./rendezvous.js";
 import { getScene, expandRoles, sceneScales, type SceneInstance } from "./scenes.js";
 import { addUsage, costUsd, priceFor, ZERO_USAGE } from "./pricing.js";
 import { readSubscriptionCreds } from "./subscriptionAuth.js";
-import type { AgentState, Finding, RunOptions, RunSummary, TokenUsage } from "./types.js";
+import type { AgentState, Finding, InboxDelivery, RunOptions, RunSummary, TokenUsage } from "./types.js";
 
 /** Optional observers so a host (the MCP server) can track a run without the console. */
 export interface RunHooks {
@@ -85,9 +86,17 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
   const dataStore = server.dataStore;
 
   const dashboardUrl = `http://localhost:${opts.port}`;
+  // testmail.app: off entirely unless both env vars are set. When on, every agent gets its
+  // own <namespace>.<runId>.<index>@inbox.testmail.app address for sign-up (see AgentContext.testmail).
+  const testmailConfig = testmailConfigFromEnv();
+  const testmailRunId = Date.now().toString(36);
   // Credentials ride out-of-band on opts.login (never in opts.task) — this is the backstop
   // that strips them from logs/WS events/findings if an agent narrates them back anyway.
-  const secrets = opts.login ? [opts.login.email, opts.login.password].filter(Boolean) : [];
+  // The testmail API key never appears in a log/report either, on the same backstop.
+  const secrets = [
+    ...(opts.login ? [opts.login.email, opts.login.password].filter(Boolean) : []),
+    ...(testmailConfig ? [testmailConfig.apiKey] : []),
+  ];
   // Race mode converges everyone on the contended page.
   const racePath = opts.race ? (opts.race.path ?? "/shop/race.html") : null;
   const targetUrl = opts.mock
@@ -207,6 +216,7 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
   }
 
   const findings: Finding[] = [];
+  const inboxDeliveries: InboxDelivery[] = [];
   const started = Date.now();
   let agentsDone = 0;
 
@@ -304,6 +314,7 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
         broadcastClusters();
       },
       onUsage: trackUsage,
+      onInboxCheck: (d) => inboxDeliveries.push(d),
     };
     const ctx: AgentContext = {
       strategy: strategies[index],
@@ -318,6 +329,15 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
       // rendering entirely — the broadcast path was already dropping their frames.
       wantFrame: () => !bigSwarm || featuredSet.has(index) || server.focusedAgentId === agentId,
       stagger: index < effectiveConcurrency,
+      testmail: testmailConfig
+        ? {
+            address: addressFor(testmailConfig, buildTag(testmailRunId, index)),
+            config: testmailConfig,
+            tag: buildTag(testmailRunId, index),
+            sinceTs: started,
+            waitSec: 60,
+          }
+        : undefined,
     };
     // Crowd roles race as lightweight concurrent clients (no browser); everyone else drives
     // a real browser — mock-scripted in demos, vision-driven with an API key.
@@ -480,6 +500,7 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     costUsd: opts.mock ? 0 : dollarsFor(usage),
     capturedErrors: capturedErrors.length > 0 ? capturedErrors : undefined,
     verdict,
+    inboxDeliveries: inboxDeliveries.length > 0 ? inboxDeliveries : undefined,
   };
 
   // Evidence screenshots have served their purpose; drop them before report/broadcast.

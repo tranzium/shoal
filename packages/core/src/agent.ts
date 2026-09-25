@@ -2,18 +2,20 @@ import { AgentBrowser, type ComputerAction } from "./browser.js";
 import { A11yBrowser, type A11yAction } from "./a11yBrowser.js";
 import { AnthropicDriver } from "./anthropicDriver.js";
 import { OpenAIDriver } from "./openaiDriver.js";
-import { A11Y_TOOL_NAME, type AgentDriver, type Observation } from "./driver.js";
+import { A11Y_TOOL_NAME, CHECK_INBOX_TOOL_NAME, type AgentDriver, type Observation } from "./driver.js";
+import { checkInbox, type TestmailConfig } from "./testmail.js";
 import type { Barrier } from "./barrier.js";
 import type { ActiveGate } from "./gate.js";
 import type { Rendezvous } from "./rendezvous.js";
 import type { SceneRole } from "./scenes.js";
-import type { AgentState, Finding, Persona, RunOptions, Strategy, TokenUsage } from "./types.js";
+import type { AgentState, Finding, InboxDelivery, Persona, RunOptions, Strategy, TokenUsage } from "./types.js";
 
 export interface AgentCallbacks {
   onState: (state: AgentState) => void;
   onThought: (text: string) => void;
   onFinding: (finding: Omit<Finding, "agentId" | "personaName" | "ts">) => void;
   onUsage?: (usage: TokenUsage) => void;
+  onInboxCheck?: (delivery: InboxDelivery) => void;
 }
 
 export interface AgentContext {
@@ -48,6 +50,11 @@ export interface AgentContext {
   wantFrame?: () => boolean;
   /** First-wave agents stagger their entry so the tank fills progressively; later waves don't. */
   stagger?: boolean;
+  /**
+   * testmail.app: this agent's own disposable sign-up address, and what it needs to poll its
+   * inbox. Set only when SHOAL_TESTMAIL_NAMESPACE/SHOAL_TESTMAIL_API_KEY are both configured.
+   */
+  testmail?: { address: string; config: TestmailConfig; tag: string; sinceTs: number; waitSec: number };
 }
 
 function systemPrompt(
@@ -71,6 +78,10 @@ ${effectiveTask}
 ${
   login
     ? `\n# Login credentials\nIf the task requires signing in, use these — never repeat them in a thought, finding, or anywhere else you narrate:\nEmail: ${login.email}\nPassword: ${login.password}\n`
+    : ""
+}${
+  ctx.testmail
+    ? `\n# Sign-up email\nIf the task requires registering a new account, use this address — it is yours alone:\n${ctx.testmail.address}\nAfter submitting sign-up, call check_inbox to read the verification code or link the site emails to it, then use it to finish verifying. Only use this address for signing up, not for signing in with existing credentials.\n`
     : ""
 }${
   strategy && strategy.id !== "complete-task"
@@ -111,10 +122,11 @@ export async function runLlmAgent(
   const modality = ctx.modality ?? "vision";
   // subscription + anthropic both use the Anthropic driver (auth differs internally).
   const withScene = Boolean(ctx.sceneRole && ctx.rendezvous);
+  const withInbox = Boolean(ctx.testmail);
   const driver: AgentDriver =
     opts.provider === "openai"
-      ? new OpenAIDriver(opts, modality, withScene)
-      : new AnthropicDriver(opts, modality, withScene);
+      ? new OpenAIDriver(opts, modality, withScene, withInbox)
+      : new AnthropicDriver(opts, modality, withScene, withInbox);
 
   const visionBrowser = modality === "vision" ? new AgentBrowser() : null;
   const a11yBrowser = modality === "a11y" ? new A11yBrowser() : null;
@@ -274,6 +286,33 @@ export async function runLlmAgent(
               ? `The other user signalled "${s.event}"${r.note ? `: ${r.note}` : ""}. Continue.`
               : `Timed out waiting for "${s.event}" — the other user never signalled it. This may itself be a finding.`,
           );
+        } else if (call.name === CHECK_INBOX_TOOL_NAME) {
+          if (!ctx.testmail) {
+            driver.addToolResult(call.id, "Inbox checking is not configured for this run.");
+          } else {
+            const { config, tag, address, sinceTs, waitSec } = ctx.testmail;
+            state.status = "thinking";
+            state.lastAction = "checking inbox…";
+            push();
+            const result = await checkInbox(config, tag, sinceTs, waitSec);
+            cb.onInboxCheck?.({
+              agentId,
+              personaName: persona.name,
+              address,
+              delivered: result.found,
+              deliveryMs: result.found ? result.deliveryMs : undefined,
+            });
+            state.lastAction = result.found ? "read inbox" : "inbox empty";
+            push();
+            driver.addToolResult(
+              call.id,
+              result.found
+                ? `Subject: ${result.subject}\n${result.code ? `Code: ${result.code}\n` : ""}${
+                    result.link ? `Link: ${result.link}\n` : ""
+                  }Body: ${result.bodyExcerpt}`
+                : "No email arrived within the wait window.",
+            );
+          }
         } else if (call.name === "report_finding") {
           const f = call.input as { severity: Finding["severity"]; title: string; description: string };
           state.status = "confused";
