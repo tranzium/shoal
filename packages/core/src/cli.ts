@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { RunController } from "./runController.js";
 import { TaskQueue } from "./taskQueue.js";
 import { safeConcurrency } from "./capacity.js";
-import { hasSubscription, credentialsError } from "./subscriptionAuth.js";
+import { credentialsError } from "./subscriptionAuth.js";
 import { briefFromText, briefFromLogs, briefFromUrl, synthesizePersonas, personasToYaml } from "./personaGen.js";
 import { DataStore } from "./dataStore.js";
 import { listScenes, sceneScales } from "./scenes.js";
@@ -30,6 +30,13 @@ try {
 // launched, however deep in the call stack that happens — is early enough.
 const playwrightBrowsersPathArg = arg("playwright-browsers-path");
 if (playwrightBrowsersPathArg) process.env.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersPathArg;
+
+// `--claude-credentials <path>` as an alternative to SHOAL_CLAUDE_CREDENTIALS: points
+// subscriptionAuth.ts at a specific .credentials.json, for the common case where `shoal
+// serve` runs under a supervisor (Warden/NSSM) as a different account than the one logged
+// in to Claude Code, so the default ~/.claude/.credentials.json resolves to the wrong home.
+const claudeCredentialsArg = arg("claude-credentials");
+if (claudeCredentialsArg) process.env.SHOAL_CLAUDE_CREDENTIALS = claudeCredentialsArg;
 
 const HELP = `
   🐟 shoal — a swarm of AI users that attack your website
@@ -102,6 +109,10 @@ const HELP = `
     --playwright-browsers-path <dir>
                          Same as the PLAYWRIGHT_BROWSERS_PATH env var, as a flag — for
                          supervisors (Warden/NSSM) that can only pass arguments, not env vars.
+    --claude-credentials <path>
+                         Same as the SHOAL_CLAUDE_CREDENTIALS env var, as a flag — points
+                         --provider subscription at a specific .credentials.json, for when
+                         shoal runs as a different user than the one logged in to Claude Code.
 
   Providers & keys:
     anthropic            ANTHROPIC_API_KEY (or \`ant auth login\`) — native computer use, metered
@@ -383,10 +394,12 @@ async function main() {
       console.error("  For Ollama any non-empty value works: OPENAI_API_KEY=ollama");
       process.exit(1);
     }
-    if (provider === "subscription" && !hasSubscription()) {
-      console.error("  --provider subscription needs a logged-in Claude Code (Pro/Max) session.");
-      console.error("  Run any Claude Code command first, or use --provider anthropic with an API key.");
-      process.exit(1);
+    if (provider === "subscription") {
+      const credError = credentialsError(provider);
+      if (credError) {
+        console.error(`  ${credError}`);
+        process.exit(1);
+      }
     }
   }
 

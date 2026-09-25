@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -19,29 +19,46 @@ export interface SubCreds {
   expiresAt: number;
 }
 
-const CREDS_PATH = join(homedir(), ".claude", ".credentials.json");
+/**
+ * Resolved on every call, never cached in a module-level const: `--claude-credentials`
+ * (cli.ts turns it into SHOAL_CLAUDE_CREDENTIALS) and `.env` are both only available
+ * after this module has already been imported, so a value baked in at import time would
+ * silently ignore either override. Precedence: explicit override, then Claude Code's own
+ * CLAUDE_CONFIG_DIR, then the default `~/.claude`. This matters most when shoal serve runs
+ * under a process supervisor (Warden/NSSM) as a different Windows/Unix account than the
+ * one logged in to Claude Code — homedir() then resolves to the service account's home,
+ * not the developer's.
+ */
+function credsPath(): string {
+  if (process.env.SHOAL_CLAUDE_CREDENTIALS) return process.env.SHOAL_CLAUDE_CREDENTIALS;
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  return join(configDir, ".credentials.json");
+}
 
 export function readSubscriptionCreds(): SubCreds {
+  const path = credsPath();
   let raw: string;
   try {
-    raw = readFileSync(CREDS_PATH, "utf8");
+    raw = readFileSync(path, "utf8");
   } catch {
     throw new Error(
-      `No Claude Code credentials at ${CREDS_PATH}. ` +
-        `Log in to Claude Code first (it uses your Pro/Max subscription), or use --provider anthropic with an API key.`,
+      `No Claude Code credentials at ${path} (running as ${userInfo().username}). ` +
+        `Log in to Claude Code first (it uses your Pro/Max subscription), point at the right ` +
+        `file with --claude-credentials <path> or SHOAL_CLAUDE_CREDENTIALS if shoal is running ` +
+        `as a different user, or use --provider anthropic with an API key.`,
     );
   }
 
   const oauth = JSON.parse(raw)?.claudeAiOauth;
   if (!oauth?.accessToken) {
     throw new Error(
-      "Claude Code credentials found, but no subscription token in them. " +
+      `Claude Code credentials found at ${path}, but no subscription token in them. ` +
         "If you logged in with an API key, use --provider anthropic instead.",
     );
   }
   if (typeof oauth.expiresAt === "number" && oauth.expiresAt < Date.now()) {
     throw new Error(
-      "Your Claude Code subscription token has expired. " +
+      `Your Claude Code subscription token at ${path} has expired. ` +
         "Run any Claude Code command (or /login) to refresh it, then retry shoal.",
     );
   }
@@ -52,16 +69,6 @@ export function readSubscriptionCreds(): SubCreds {
     tier: oauth.rateLimitTier ?? "unknown",
     expiresAt: oauth.expiresAt ?? 0,
   };
-}
-
-/** True if Claude Code subscription creds are present and unexpired (for CLI preflight). */
-export function hasSubscription(): boolean {
-  try {
-    readSubscriptionCreds();
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -78,8 +85,12 @@ export function credentialsError(provider: "anthropic" | "openai" | "subscriptio
   if (provider === "openai" && !(process.env.OPENAI_API_KEY || process.env.SHOAL_OPENAI_API_KEY)) {
     return "--provider openai needs OPENAI_API_KEY (or SHOAL_OPENAI_API_KEY).";
   }
-  if (provider === "subscription" && !hasSubscription()) {
-    return "--provider subscription needs a logged-in Claude Code (Pro/Max) session — run any Claude Code command (or /login) to refresh it, then retry.";
+  if (provider === "subscription") {
+    try {
+      readSubscriptionCreds();
+    } catch (err) {
+      return (err as Error).message;
+    }
   }
   return null;
 }
