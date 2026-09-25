@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type CDPSession, type Page, type Worker } from "playwright";
 import type { CapturedError } from "./types.js";
+import type { QaGuardEvent } from "./qa.js";
 
 export const DISPLAY_WIDTH = 1024;
 export const DISPLAY_HEIGHT = 768;
@@ -152,12 +153,28 @@ class ErrorCapture {
   }
 }
 
+/** Matches a hostname against a QA mission's `hosts` allowlist ("x.test" also matches
+ *  "static.x.test"'s subdomains the same way `safety.ts`'s domain allowlist does). */
+function qaHostAllowed(host: string, hosts: string[]): boolean {
+  const h = host.toLowerCase();
+  return hosts.some((d) => {
+    const dd = d.toLowerCase().replace(/^\*\./, "");
+    return h === dd || h.endsWith(`.${dd}`);
+  });
+}
+
 export class AgentBrowser {
   private context!: BrowserContext;
   private cdp?: CDPSession;
   private extensionUserDataDir?: string;
   page!: Page;
   readonly errors = new ErrorCapture();
+  /** QA mode only: top-level navigations fenced off because their host isn't in `hosts`. */
+  readonly blockedNavigations: string[] = [];
+  /** QA mode only: guard evidence (>=400 responses, pageerrors, console errors) for qa.ts's evaluateGuards. */
+  readonly qaGuardEvents: QaGuardEvent[] = [];
+  /** QA mode only: HTTP status of the last main-document response seen. */
+  qaDocStatus: number | null = null;
 
   /**
    * `extensionDir`, when set, loads that unpacked extension via `--load-extension` instead
@@ -173,7 +190,7 @@ export class AgentBrowser {
    * headed or not. `timeout` is explicit (Playwright's persistent-context default is 3
    * minutes) so a broken extension/profile fails a repro task in seconds, not minutes.
    */
-  async launch(url: string, headless: boolean, extensionDir?: string): Promise<void> {
+  async launch(url: string, headless: boolean, extensionDir?: string, qaHosts?: string[]): Promise<void> {
     if (extensionDir) {
       this.extensionUserDataDir = await mkdtemp(join(tmpdir(), "shoal-ext-"));
       this.context = await chromium.launchPersistentContext(this.extensionUserDataDir, {
@@ -217,7 +234,86 @@ export class AgentBrowser {
       this.errors.record("network", `${req.method()} ${req.url()} — ${failure?.errorText ?? "failed"}`);
     });
 
-    await this.page.goto(url, { waitUntil: "domcontentloaded" });
+    if (qaHosts) {
+      // Navigation fence: a top-level document navigation to a host outside `hosts` is
+      // aborted rather than followed — it's listed as blocked, never counted as a network
+      // error (an external link the navigator clicks is expected behavior, not a guard hit).
+      await this.context.route("**/*", (route) => {
+        const req = route.request();
+        if (req.isNavigationRequest() && req.frame() === this.page.mainFrame()) {
+          let host = "";
+          try {
+            host = new URL(req.url()).hostname;
+          } catch {
+            /* malformed URL — treat as not allowed */
+          }
+          if (!qaHostAllowed(host, qaHosts)) {
+            this.blockedNavigations.push(req.url());
+            return route.abort();
+          }
+        }
+        return route.continue();
+      });
+      this.page.on("response", (res) => {
+        let host = "";
+        try {
+          host = new URL(res.url()).hostname;
+        } catch {
+          return;
+        }
+        const type = res.request().resourceType();
+        if (type === "document" && res.url() === this.page.url()) this.qaDocStatus = res.status();
+        if ((type === "document" || type === "xhr" || type === "fetch") && res.status() >= 400) {
+          this.qaGuardEvents.push({ kind: "http", host, text: `${res.request().method()} ${res.url()} — ${res.status()}` });
+        }
+      });
+      this.page.on("pageerror", (err) => {
+        this.qaGuardEvents.push({ kind: "pageerror", host: new URL(this.page.url()).hostname, text: err.message });
+      });
+      this.page.on("console", (msg) => {
+        if (msg.type() !== "error") return;
+        let host = "";
+        try {
+          host = new URL(this.page.url()).hostname;
+        } catch {
+          /* no current URL yet */
+        }
+        this.qaGuardEvents.push({ kind: "console", host, text: msg.text() });
+      });
+    }
+
+    const response = await this.page.goto(url, { waitUntil: "domcontentloaded" });
+    if (qaHosts && response) this.qaDocStatus = response.status();
+  }
+
+  /**
+   * QA mode: resolves the selector text/attrs a check list needs, plus cookies and the
+   * capped body text, into the literal shape qa.ts's pure `evaluate` reads. `selectors`
+   * is the distinct set of selector strings in play ("" = whole document body).
+   */
+  async qaSnapshot(selectors: string[]): Promise<{
+    bodyText: string;
+    selectors: Record<string, { text: string; attrs: Record<string, string> } | null>;
+    cookies: Record<string, string>;
+  }> {
+    const resolved = (await this.page.evaluate((keys: string[]) => {
+      const out: Record<string, { text: string; attrs: Record<string, string> } | null> = {};
+      for (const sel of keys) {
+        const el = sel ? document.querySelector(sel) : document.body;
+        if (!el) {
+          out[sel] = null;
+          continue;
+        }
+        const attrs: Record<string, string> = {};
+        for (const a of Array.from((el as Element).attributes ?? [])) attrs[a.name] = a.value;
+        out[sel] = { text: (el as HTMLElement).innerText ?? el.textContent ?? "", attrs };
+      }
+      return out;
+    }, selectors)) as Record<string, { text: string; attrs: Record<string, string> } | null>;
+    const cookiesList = await this.context.cookies();
+    const cookies = Object.fromEntries(cookiesList.map((c) => [c.name, c.value]));
+    const bodyText = (resolved[""]?.text ?? "").slice(0, 20000);
+    return { bodyText, selectors: resolved, cookies };
   }
 
   /** Correlates newly captured errors with the agent's current step (docs/report: "first-seen step"). */

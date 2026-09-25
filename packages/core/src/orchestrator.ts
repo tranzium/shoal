@@ -1,4 +1,6 @@
 import { runLlmAgent, type AgentCallbacks, type AgentContext } from "./agent.js";
+import { runQaAgent } from "./qaAgent.js";
+import { buildQaReport } from "./qa.js";
 import { runMockAgent } from "./mockAgent.js";
 import { runGhostRacer } from "./ghostRacer.js";
 import { fillFromPool } from "./personas.js";
@@ -19,7 +21,7 @@ import { Rendezvous } from "./rendezvous.js";
 import { getScene, expandRoles, sceneScales, type SceneInstance } from "./scenes.js";
 import { addUsage, costUsd, priceFor, ZERO_USAGE } from "./pricing.js";
 import { readSubscriptionCreds } from "./subscriptionAuth.js";
-import type { AgentState, Finding, InboxDelivery, RunOptions, RunSummary, TokenUsage } from "./types.js";
+import type { AgentState, Finding, InboxDelivery, Persona, RunOptions, RunSummary, TokenUsage } from "./types.js";
 
 /** Optional observers so a host (the MCP server) can track a run without the console. */
 export interface RunHooks {
@@ -157,7 +159,12 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
   // Resolve each agent's persona. Scene roles carry their persona; otherwise generate or
   // pick from the library.
   let personas;
-  if (instances) {
+  if (opts.qa) {
+    // QA mode: `swarm` is repeat count, not persona spread — the same navigator identity
+    // runs every repeat (its own id still gets the -<index> suffix from agentIdOf below).
+    const navigator: Persona = { id: "qa-navigator", emoji: "🧭", name: "QA Navigator", patience_steps: opts.qa.maxSteps ?? 12, profile: "" };
+    personas = Array.from({ length: opts.swarm }, () => navigator);
+  } else if (instances) {
     personas = instances.map((x) => x.persona);
   } else if (opts.generate && !opts.mock) {
     const brief = opts.generate.fromLogs
@@ -173,12 +180,15 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     personas = dataStore.pickPersonas(opts.swarm, opts.personaIds);
   }
 
-  // The second axis. Race mode forces the race strategy on everyone; scenes use roles.
-  const strategies = instances
-    ? instances.map(() => undefined)
-    : opts.race
-      ? Array.from({ length: opts.swarm }, () => dataStore.getStrategy("race"))
-      : dataStore.assignStrategies(opts.swarm, opts.strategyIds);
+  // The second axis. QA mode has no strategy (no persona spread either); race mode forces
+  // the race strategy on everyone; scenes use roles.
+  const strategies = opts.qa
+    ? Array.from({ length: opts.swarm }, () => undefined)
+    : instances
+      ? instances.map(() => undefined)
+      : opts.race
+        ? Array.from({ length: opts.swarm }, () => dataStore.getStrategy("race"))
+        : dataStore.assignStrategies(opts.swarm, opts.strategyIds);
   if (opts.strategyIds?.length || opts.race) {
     const names = [...new Set(strategies.map((s) => s?.name).filter(Boolean))];
     log(`  🎯 strategies: ${names.join(" · ")}\n`);
@@ -343,9 +353,10 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
           }
         : undefined,
     };
-    // Crowd roles race as lightweight concurrent clients (no browser); everyone else drives
-    // a real browser — mock-scripted in demos, vision-driven with an API key.
-    const run = ctx.sceneRole?.browserless ? runGhostRacer : opts.mock ? runMockAgent : runLlmAgent;
+    // Crowd roles race as lightweight concurrent clients (no browser); QA missions drive the
+    // navigator loop; everyone else drives a real browser — mock-scripted in demos,
+    // vision-driven with an API key.
+    const run = ctx.sceneRole?.browserless ? runGhostRacer : opts.qa ? runQaAgent : opts.mock ? runMockAgent : runLlmAgent;
     const result = await run(agentId, persona, { ...opts, url: urlFor(index) }, cb, ctx);
     featuredSet.delete(index); // hand the video slot to the next agent that launches
     agentsDone++;
@@ -461,8 +472,10 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
   // (Its own tokens are counted into the run cost — the editor isn't free either.)
   // Uses env Anthropic creds when present; otherwise the subscription token on a
   // sub-reachable model. Delegating verify to an MCP orchestrator is the future path.
-  // Skipped on a stopped run — the operator wants out now, not after a model call.
-  if (opts.verify && !opts.mock && !stopped && findings.length > 0) {
+  // Skipped on a stopped run — the operator wants out now, not after a model call. QA
+  // missions skip it too: navigator findings are listed, not graded — the judge (run
+  // per-repeat, inside runQaAgent) is the only grading pass that applies to them.
+  if (opts.verify && !opts.mock && !stopped && !opts.qa && findings.length > 0) {
     const envAnthropic = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
     let verifyAuth: { authToken?: string; model?: string } | null = null;
     if (envAnthropic) verifyAuth = {}; // default: env creds, claude-opus-5
@@ -502,6 +515,16 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
       )
     : undefined;
 
+  // QA mode: aggregate each repeat's code+judge grading into one mission verdict.
+  const qaReport = opts.qa
+    ? buildQaReport(
+        opts.qaMission ?? "adhoc",
+        targetUrl,
+        { model: opts.model, repeats: effectiveSwarm, startedAt: started, finishedAt: Date.now(), usage },
+        states.map((s) => s.qaResult).filter((r): r is NonNullable<typeof r> => Boolean(r)),
+      )
+    : undefined;
+
   const summary: RunSummary = {
     total: states.length,
     completed: states.filter((s) => s.status === "done").length,
@@ -513,6 +536,7 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     capturedErrors: capturedErrors.length > 0 ? capturedErrors : undefined,
     verdict,
     inboxDeliveries: inboxDeliveries.length > 0 ? inboxDeliveries : undefined,
+    qa: qaReport,
   };
 
   // Evidence screenshots have served their purpose; drop them before report/broadcast.
