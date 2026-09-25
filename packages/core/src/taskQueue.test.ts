@@ -129,10 +129,11 @@ test("each task writes its own reports/<id>.md and .json", async () => {
     cleanupIds.push(r.task.id);
     await waitFor(() => queue.get(r.task.id)?.status === "done");
     const report = await queue.getReport(r.task.id);
-    expect(report).toBeDefined();
-    expect(report!.md).toContain("Report Me");
-    expect(report!.md).toContain(r.task.id);
-    expect((report!.json as { id: string }).id).toBe(r.task.id);
+    expect(report.ok).toBe(true);
+    if (!report.ok) return;
+    expect(report.md).toContain("Report Me");
+    expect(report.md).toContain(r.task.id);
+    expect((report.json as { id: string }).id).toBe(r.task.id);
   });
 });
 
@@ -181,7 +182,8 @@ test("a login is carried out-of-band, not appended to the task text", async () =
     expect(queue.get(r.task.id)?.task).toBe("log in and check the order history");
     await waitFor(() => queue.get(r.task.id)?.status === "done");
     const report = await queue.getReport(r.task.id);
-    expect(report!.md).not.toContain("hunter2-secret");
+    expect(report.ok).toBe(true);
+    if (report.ok) expect(report.md).not.toContain("hunter2-secret");
   });
 });
 
@@ -227,5 +229,43 @@ test("submit rejects an unknown mission name", async () => {
 test("submit with a mission name but no data store attached is rejected, not a crash", async () => {
   await withServer(async (_server, queue) => {
     expect(queue.submit({ mission: "signup" }).ok).toBe(false);
+  });
+});
+
+test("submit rejects an unknown strategy id when a data store is attached", async () => {
+  await withMissionServer({}, async (_server, queue) => {
+    const r = queue.submit({ url: "http://x/", task: "do it", strategy: "does-not-exist" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("does-not-exist");
+  });
+});
+
+test("submit rejects unknown persona ids when a data store is attached", async () => {
+  await withMissionServer({}, async (_server, queue) => {
+    const r = queue.submit({ url: "http://x/", task: "do it", personas: ["not-a-real-persona"] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("not-a-real-persona");
+  });
+});
+
+test("submit does not validate strategy/persona ids without a data store", async () => {
+  await withServer(async (_server, queue) => {
+    const r = queue.submit({ url: "http://x/", task: "do it", swarm: 0, strategy: "whatever", personas: ["whoever"] });
+    expect(r.ok).toBe(true);
+    if (r.ok) cleanupIds.push(r.task.id);
+  });
+});
+
+test("getReport distinguishes an unknown task from one with no report yet", async () => {
+  await withServer(async (_server, queue) => {
+    const unknown = await queue.getReport("nope");
+    expect(unknown).toEqual({ ok: false, reason: "not_found" });
+
+    const r = queue.submit({ url: "http://x/", task: "still running", swarm: 0 });
+    if (!r.ok) throw new Error("submit failed");
+    cleanupIds.push(r.task.id);
+    const notReady = await queue.getReport(r.task.id);
+    expect(notReady.ok).toBe(false);
+    if (!notReady.ok) expect(notReady.reason).toBe("not_ready");
   });
 });
