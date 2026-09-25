@@ -29,6 +29,10 @@ export interface RunHooks {
   /** Keep the dashboard server alive after the run (CLI does; MCP shuts down). */
   keepAlive?: boolean;
   quiet?: boolean;
+  /** Overrides the default console logger — e.g. the task queue captures every line to a
+   *  per-task transcript instead of letting `quiet` drop it on the floor entirely. Takes
+   *  priority over `quiet` when both are set. */
+  log?: (line: string) => void;
   /**
    * Reuse a server that outlives this run. The dashboard stays connected across
    * stop/restart cycles, which is what makes the UI controls work.
@@ -76,7 +80,7 @@ async function pool<R>(
 }
 
 export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<RunSummary> {
-  const log = hooks.quiet ? () => {} : console.log;
+  const log = hooks.log ?? (hooks.quiet ? () => {} : console.log);
   const server = hooks.server ?? new ShoalServer();
   if (!hooks.server) await server.start(opts.port);
   else server.race.reset(); // fresh contended resource for each run
@@ -349,10 +353,18 @@ export async function runSwarm(opts: RunOptions, hooks: RunHooks = {}): Promise<
     return result;
   };
 
-  const states = await pool(effectiveSwarm, effectiveConcurrency, runOne, hooks.signal);
-  rendezvous?.releaseAll();
-  await closeSharedBrowser();
-  await closeSharedA11yBrowser();
+  // Cleanup must run even if pool() itself rejects (a truly uncaught error from a worker,
+  // rather than one runLlmAgent/runMockAgent/runGhostRacer already turned into an "error"
+  // state) — otherwise a failed task leaks the shared browser pool's Chromium processes,
+  // and they stay around across every task the service runs afterward.
+  let states: AgentState[];
+  try {
+    states = await pool(effectiveSwarm, effectiveConcurrency, runOne, hooks.signal);
+  } finally {
+    rendezvous?.releaseAll();
+    await closeSharedBrowser();
+    await closeSharedA11yBrowser();
+  }
 
   const stopped = hooks.signal?.aborted ?? false;
   if (stopped) log(`\n  ⏹  run stopped by operator`);

@@ -86,7 +86,12 @@ export class RunController {
    *  changed something: refresh the dashboard's strategy list and error status. Never touches
    *  a run already in flight — only the next run sees the new data. */
   private onDataChange(): void {
-    this.broadcastState();
+    // In `shoal serve` mode, the TaskQueue — not this controller — owns run phase and health
+    // once a task starts (it calls runSwarm directly, bypassing this.run()). This controller's
+    // own `phase` sits frozen at "idle" for the whole service lifetime in that mode, so
+    // re-broadcasting it here on every data-dir tick would stomp a task genuinely running —
+    // both the dashboard and /api/health would flip to "idle" mid-task.
+    if (!this.server.tasks) this.broadcastState();
     this.broadcastDataStatus();
   }
 
@@ -138,6 +143,10 @@ export class RunController {
       .catch((err: Error) => console.error(`  ✗ run failed: ${err.message}`))
       .finally(() => {
         this.phase = "finished";
+        // Any agent still cached as queued/mid-flight (a run that errored or was stopped
+        // before every seeded fish was reached) is stale now — flip it to stopped instead
+        // of leaving it frozen in the tank.
+        this.server.reconcileAgents();
         this.broadcastState();
       });
 
